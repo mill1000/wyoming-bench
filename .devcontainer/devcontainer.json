@@ -1,0 +1,10 @@
+{
+  "image": "mcr.microsoft.com/devcontainers/python:3.14",
+  "features": {
+    "ghcr.io/devcontainers/features/git:1": {}
+  },
+  "runArgs": [
+    "--network=host"
+  ],
+  "postCreateCommand": "pip install isort black; pip install --editable ."
+}

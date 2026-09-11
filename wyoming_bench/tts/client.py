@@ -22,11 +22,9 @@ from wyoming.tts import (
     SynthesizeVoice,
 )
 
+from ..const import MODE_STREAMING
 from .reporting import Measurement
 from .texts import split_sentences
-
-MODE_NON_STREAMING = "non_streaming"
-MODE_STREAMING = "streaming"
 
 _TEXT_FORMATS: dict[str, SynthesizeTextFormat] = {
     "text": SynthesizeTextFormat.TEXT,
@@ -71,9 +69,7 @@ async def measure_once(
         m.error = str(e)
         return m
 
-    client = AsyncTcpClient(
-        host, port, connect_timeout=connect_timeout, read_timeout=read_timeout
-    )
+    client = AsyncTcpClient(host, port, connect_timeout=connect_timeout, read_timeout=read_timeout)
     try:
         await client.connect()
         if mode == MODE_STREAMING:
@@ -128,9 +124,7 @@ async def _read_audio(
             if m.t_end is None and t_last_audio_stop is not None and m.n_chunks > 0:
                 m.t_end = t_last_audio_stop
             elif m.t_end is None:
-                raise SynthesisError(
-                    f"connection closed before {stop_cls.__name__.lower()}"
-                )
+                raise SynthesisError(f"connection closed before {stop_cls.__name__.lower()}")
             break
         if Error.is_type(event.type):
             err = Error.from_event(event)
@@ -206,3 +200,80 @@ async def _run_streaming(
         reader.cancel()
         raise
     await reader
+
+
+# --- corpus generation ------------------------------------------------------
+
+
+async def _collect_audio(
+    client: AsyncTcpClient,
+    stop_cls: type[AudioStop | SynthesizeStopped],
+) -> tuple[bytes, int, int, int]:
+    """Read a synthesis response, returning ``(pcm, rate, width, channels)``.
+
+    *stop_cls* marks the terminal event: ``AudioStop`` for a single
+    non-streaming cycle, ``SynthesizeStopped`` for streaming (read through the
+    intermediate per-sentence ``audio-stop`` events). Audio chunks are
+    concatenated into *pcm*.
+    """
+    pcm_parts: list[bytes] = []
+    rate = width = channels = 0
+    while True:
+        event = await client.read_event()
+        if event is None:
+            raise SynthesisError("connection closed before end of audio")
+        if Error.is_type(event.type):
+            err = Error.from_event(event)
+            code = f" ({err.code})" if err.code else ""
+            raise SynthesisError(f"server error{code}: {err.text}")
+        if AudioStart.is_type(event.type):
+            start = AudioStart.from_event(event)
+            rate, width, channels = start.rate, start.width, start.channels
+        elif AudioChunk.is_type(event.type):
+            pcm_parts.append(AudioChunk.from_event(event).audio)
+        elif stop_cls is AudioStop and AudioStop.is_type(event.type):
+            break
+        elif stop_cls is SynthesizeStopped and SynthesizeStopped.is_type(event.type):
+            break
+    if not pcm_parts:
+        raise SynthesisError("no audio chunks received")
+    return b"".join(pcm_parts), rate, width, channels
+
+
+async def synthesize_audio(
+    host: str,
+    port: int,
+    mode: str,
+    text: str,
+    voice: SynthesizeVoice | None,
+    text_format: str | None,
+    connect_timeout: float,
+    read_timeout: float,
+) -> tuple[bytes, int, int, int]:
+    """Synthesize *text* and return ``(pcm, rate, width, channels)``.
+
+    Opens a fresh connection. Raises ``SynthesisError`` (or ``TimeoutError``)
+    on failure rather than returning a partial result.
+    """
+    text_fmt = _to_format(text_format)
+    client = AsyncTcpClient(host, port, connect_timeout=connect_timeout, read_timeout=read_timeout)
+    try:
+        await client.connect()
+        if mode == MODE_STREAMING:
+            reader = asyncio.create_task(_collect_audio(client, SynthesizeStopped))
+            try:
+                await client.write_event(SynthesizeStart(voice, text_fmt).event())
+                for sentence in split_sentences(text):
+                    await client.write_event(SynthesizeChunk(sentence + " ").event())
+                await client.write_event(SynthesizeStop().event())
+            except BaseException:
+                reader.cancel()
+                raise
+            return await reader
+        await client.write_event(Synthesize(text, voice, text_fmt).event())
+        return await _collect_audio(client, AudioStop)
+    finally:
+        try:
+            await client.disconnect()
+        except Exception:  # noqa: BLE001
+            pass

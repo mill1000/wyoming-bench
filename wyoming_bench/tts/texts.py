@@ -1,8 +1,15 @@
-"""Default benchmark texts and a small sentence splitter for streaming chunks."""
+"""Default benchmark texts; sentence splitting via ``sentence-stream``.
+
+Streaming synthesis sends text sentence-by-sentence as ``synthesize-chunk``
+events, so the split quality directly shapes what the server sees mid-stream.
+``sentence-stream`` (Home Assistant, Apache-2.0) is a heuristic splitter that
+holds abbreviations/initials (``Mr.``, ``U.S.``) together, handles CJK and
+other scripts, and merges very short fragments rather than over-splitting.
+"""
 
 from __future__ import annotations
 
-import re
+from sentence_stream import stream_to_sentences
 
 # One sample per sentence count (1..4). Used as the default corpus.
 DEFAULT_TEXTS: list[str] = [
@@ -12,19 +19,13 @@ DEFAULT_TEXTS: list[str] = [
     "Welcome to the Wyoming protocol benchmark. We measure latency, streaming behavior, and throughput. Each sample is between one and four sentences long. Results help us choose the best engine for real-time use.",
 ]
 
-# Sentence = run of non-terminators followed by one or more terminators (and a
-# space or end), plus a trailing run with no terminator. Imperfect about
-# abbreviations (``e.g.``), which is acceptable for a benchmark.
-_SENTENCE_RE = re.compile(r"[^.!?]+[.!?]+(?:\s+|$)|[^.!?]+$")
-
 
 def split_sentences(text: str) -> list[str]:
-    """Split *text* into one or more sentences.
+    """Split *text* into one or more sentences (sentence-stream heuristics).
 
     Returns an empty list for empty/whitespace-only input.
     """
     text = text.strip()
     if not text:
         return []
-    parts = [part.strip() for part in _SENTENCE_RE.findall(text)]
-    return [part for part in parts if part]
+    return [part.strip() for part in stream_to_sentences(text) if part.strip()]

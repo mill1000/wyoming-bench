@@ -1,16 +1,28 @@
-# wyoming-tts-bench
+# wyoming-bench
 
-Benchmark text-to-speech servers that speak the [Wyoming protocol](https://github.com/OHF-Voice/wyoming).
+Benchmark servers that speak the [Wyoming protocol](https://github.com/OHF-Voice/wyoming):
 
-The tool drives each server through the **non-streaming** (`synthesize`) and
-**streaming** (`synthesize-start` / `synthesize-chunk` / `synthesize-stop`)
-synthesis paths and reports latency and throughput:
+- **TTS** — text-to-speech servers, via the **non-streaming** (`synthesize`) and
+  **streaming** (`synthesize-start` / `synthesize-chunk` / `synthesize-stop`)
+  synthesis paths. Reports latency and throughput.
+- **STT** — speech-to-text (ASR) servers, via the **non-streaming** and
+  **streaming** (`transcript-start` / `transcript-chunk` / `transcript-stop`)
+  transcription paths. Reports speed **and** word-level accuracy.
+- **gen-corpus** — synthesize a test corpus from a TTS server to feed the STT
+  benchmark (a realistic TTS→STT round-trip).
+- **info** — query a server's advertised services (`describe`/`info`), so you
+  can see whether it speaks TTS, STT, or both, and whether it supports
+  streaming.
 
-- **TTFT** — time to first audio byte (from when the request is sent).
-- **Total** — total wall time until the final `audio-stop` event.
-- **RTF** — total time divided by the duration of the returned audio
-  (lower is better; `< 1` means faster than real time).
-- **Audio** — returned audio duration and byte count.
+Before benchmarking, sends a `describe` to
+confirm the server advertises the service being benchmarked. A server that
+answers but lacks it (e.g. an STT server for a TTS benchmark) is skipped with
+a notice instead of timing out on every round. Servers that do not answer
+describe at all are benchmarked as before. The same describe response also
+reports whether the server advertises streaming support: when it does not,
+streaming mode is skipped immediately with a notice (no behavioral probe, no
+per-round timeout). A server that advertises streaming — or does not report it
+at all — is probed once to confirm before the streaming rounds run.
 
 Every measurement uses a fresh TCP connection, so results are isolated per
 round. Statistics (min / mean / median / p95 / max) are aggregated across
@@ -25,46 +37,173 @@ pip install .
 or run in place without installing:
 
 ```sh
-python3 -m wyoming_tts_bench --help
+python3 -c "from wyoming_bench.cli import main; main(['--help'])"
 ```
 
 ## Usage
 
 ```sh
-# One server, both modes, default texts (one per 1..4 sentences)
-wyoming-tts-bench -s 10.100.1.20:10210
+# TTS: one server, both modes, default texts (one per 1..4 sentences)
+wyoming-bench tts 10.100.1.20:10210
 
-# Multiple servers, streaming only, 5 rounds
-wyoming-tts-bench -s a:10700 -s b:10700 --mode streaming --rounds 5
+# TTS: multiple servers, streaming only, 5 rounds
+wyoming-bench tts a:10700 b:10700 --mode streaming --rounds 5
 
-# Comma-separated servers, specific voice from a JSON config
-wyoming-tts-bench --servers a:10700,b:10700 \
+# TTS: specific voice from a JSON config
+wyoming-bench tts a:10700 \
     --config '{"voice": {"name": "en_US-lessac-medium"}, "text_format": "text"}'
 
-# Verbose per-measurement output, extra chunk delay for streaming
-wyoming-tts-bench -s a:10700 --mode streaming --chunk-delay 0.2 -v
+# TTS: verbose per-measurement output, extra chunk delay for streaming
+wyoming-bench tts a:10700 --mode streaming --chunk-delay 0.2 -v
+
+# STT: one server, both modes, over a corpus of paired recordings
+wyoming-bench stt 10.100.1.20:10700 --corpus ./samples
+
+# STT: multiple servers, accuracy + speed comparison, 3 rounds
+wyoming-bench stt a:10700 b:10700 --corpus ./samples --rounds 3
+
+# STT: streaming only, pace audio-chunk writes at 0.1s (simulated real-time)
+wyoming-bench stt a:10700 --mode streaming --corpus ./samples --chunk-delay 0.1 -v
+
+# Generate a corpus from a TTS server, then benchmark an STT server on it
+wyoming-bench gen-corpus tts:10210 --out ./tts-samples \
+    --texts "The quick brown fox jumps over the lazy dog."
+wyoming-bench stt asr:10700 --corpus ./tts-samples
+
+# Inspect what a server offers before benchmarking it
+wyoming-bench info 10.100.1.20:10700
 ```
+
+### TTS metrics
+
+- **TTFT** — time to first audio byte (from when the request is sent).
+- **Total** — total wall time until the final `audio-stop` event.
+- **RTF** — total time divided by the duration of the returned audio
+  (lower is better; `< 1` means faster than real time).
+- **Audio** — returned audio duration and byte count.
+
+In streaming mode the text is split into sentences (via the
+[sentence-stream](https://github.com/OHF-Voice/sentence-stream) heuristics,
+which hold abbreviations such as `Mr.` and `U.S.` together) and sent one
+sentence per `synthesize-chunk` event, so servers that buffer until a
+certain boundary are exercised the way an LLM-driven pipeline would drive
+them. `--chunk-delay` paces those writes.
+
+### STT metrics
+
+Speed:
+
+- **Total** — wall time until the final transcript result.
+- **TTFT** — time to the first `transcript-chunk` (streaming mode only).
+- **RTF** — total time divided by the duration of the input audio
+  (lower is better; `< 1` means faster than real time).
+
+Accuracy (word-level by default, character-level as a bonus):
+
+- **WER** — pooled word error rate: `(substitutions + insertions + deletions)`
+  over total reference words across all samples.
+- **CER** — pooled character error rate (over total reference characters).
+- **SAR** — sentence accuracy: the fraction of samples whose normalized
+  transcript exactly matches the reference.
+- **S / I / D** — total substitution / insertion / deletion word counts.
+
+Reference and hypothesis text are normalized before comparison (lowercased,
+punctuation stripped, whitespace collapsed).
+
+## Corpus format (STT)
+
+`--corpus DIR` points at a directory of `.wav` recordings paired with `.txt`
+transcripts that share the same stem:
+
+```
+samples/
+  data_01.wav   +   data_01.txt
+  data_02.wav   +   data_02.txt
+  ...
+```
+
+- `data_01.txt` holds the reference transcript for `data_01.wav`.
+- Files without a matching counterpart are skipped with a warning.
+- The WAV is sent to the server as-is (its sample rate / width / channels are
+  read from the header). Record the corpus in the format the ASR server expects
+  — typically **16 kHz, 16-bit, mono**.
+
+## Generating a test corpus from a TTS server
+
+Prefer not to record audio? `gen-corpus` synthesizes text with a TTS server and
+saves each sample as a `.wav` plus the source text as its `.txt` reference. A
+TTS→STT round-trip then yields a realistic word-error-rate measurement:
+
+```sh
+wyoming-bench gen-corpus tts:10210 --out ./tts-samples \
+    --config '{"voice": "en_US-lessac-medium"}'
+wyoming-bench stt asr:10700 --corpus ./tts-samples
+```
+
+The WAV is saved in whatever format the TTS server emits — make sure that format
+is acceptable to the STT server (most resample internally, but check yours).
 
 ## Options
 
+All subcommands take the server(s) as positional arguments (`SERVER` is `HOST`
+or `HOST:PORT`, repeatable). `tts`, `stt`, and `gen-corpus` share these flags
+(in addition to their own):
+
 | Flag | Description | Default |
 | --- | --- | --- |
-| `-s, --server HOST[:PORT]` | Server to benchmark (repeatable). | — |
-| `--servers A,B` | Comma-separated server list (alt to `-s`). | — |
-| `--rounds N` | Timed measurement rounds per text per mode. | `3` |
+| `--rounds N` | Timed measurement rounds per sample per mode. | `3` |
 | `--warmup N` | Untimed warmup runs per mode. | `1` |
-| `--mode {non_streaming,streaming,both}` | Synthesis path(s) to exercise. | `both` |
-| `--texts TEXT [TEXT ...]` | Text samples to synthesize. | built-in 1–4 sentence set |
-| `--texts-file FILE` | One text sample per line. | — |
-| `--config JSON` | `{"voice": "name"}` or `{"voice": {"name","language","speaker"}, "text_format": "text"}`. | `{}` |
-| `--chunk-delay SEC` | Seconds to wait between `synthesize-chunk` writes (streaming). | `0` |
+| `--mode {non_streaming,streaming,both}` | Path(s) to exercise. | `both` |
+| `--probe-timeout SEC` | Per-event timeout for one-off probes (streaming capability, describe preflight). | `8` |
 | `--timeout SEC` | Connect and per-event read timeout. | `60` |
 | `-v, --verbose` | Print one line per measurement. | off |
+
+TTS-specific flags:
+
+| Flag | Description | Default |
+| --- | --- | --- |
+| `--texts TEXT [TEXT ...]` | Text samples to synthesize. | built-in 1–4 sentence set |
+| `--texts-file FILE` | One text sample per line. | — |
+| `--texts-dir DIR` | Directory of .txt files, one text sample per file. | — |
+| `--config JSON` | `{"voice": "name"}` or `{"voice": {"name","language","speaker"}, "text_format": "text"}`. | `{}` |
+| `--chunk-delay SEC` | Seconds to wait between `synthesize-chunk` writes (streaming). | `0` |
+| `--unique` / `--no-unique` | Append a random nonce to each text to defeat server-side synthesis caching (cold-cache timings). | on |
+
+STT-specific flags:
+
+| Flag | Description | Default |
+| --- | --- | --- |
+| `--corpus DIR` | Directory of paired `.wav`/`.txt` samples (required). | — |
+| `--config JSON` | Transcribe JSON, e.g. `{"name": "model", "language": "en"}` (fields: `name`, `language`, `context`, `vad_sensitivity`, `transcript_names`, `transcript_terms`). | `{}` |
+| `--chunk-samples N` | Samples per `audio-chunk` when sending audio. | `1024` |
+| `--chunk-delay SEC` | Seconds to wait between `audio-chunk` writes (streaming). | `0` |
+
+gen-corpus-specific flags:
+
+| Flag | Description | Default |
+| --- | --- | --- |
+| `--out DIR` | Output directory for the corpus (created if missing, required). | — |
+| `--mode {non_streaming,streaming}` | TTS synthesis path to use. | `non_streaming` |
+| `--texts TEXT [TEXT ...]` | Text to synthesize. | built-in 1–4 sentence set |
+| `--texts-file FILE` | One text sample per line. | — |
+| `--texts-dir DIR` | Directory of .txt files, one text sample per file. | — |
+| `--config JSON` | Voice/format JSON (same as `tts`). | `{}` |
+| `--prefix PFX` | File name prefix (`sample_01.wav`, …). | `sample` |
+| `--overwrite` | Overwrite existing files. | off |
+| `--probe-timeout SEC` | Per-event timeout for the one-off describe preflight. | `8` |
+| `--timeout SEC` | Connect and per-event read timeout. | `60` |
+
+`info`-specific flags:
+
+| Flag | Description | Default |
+| --- | --- | --- |
+| `--timeout SEC` | Timeout for the describe exchange. | `5` |
 
 A bare `HOST` uses port `10700` (the Wyoming default).
 
 ## Exit codes
 
 `0` — at least one measurement succeeded.
-`1` — every measurement on every server failed.
+`1` — every measurement on every server failed (or a server was skipped / no
+info response).
 `130` — interrupted.

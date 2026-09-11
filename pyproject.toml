@@ -1,20 +1,63 @@
 [build-system]
-requires = ["setuptools>=61"]
+requires = ["setuptools>=68", "setuptools_scm[toml]>=6.2"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "wyoming-tts-bench"
-version = "0.1.0"
-description = "Benchmark Wyoming-protocol TTS servers (non-streaming and streaming)."
+name = "wyoming-bench"
+dynamic = ["version"]
+description = "Benchmark Wyoming-protocol TTS and STT servers (non-streaming and streaming)."
 readme = "README.md"
 requires-python = ">=3.10"
-license = { text = "MIT" }
+license = "MIT"
+authors = [
+  { name = "Tucker Kern", email = "tuckkern@gmail.com" },
+]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
+  "Operating System :: OS Independent",
+]
 dependencies = [
-    "wyoming>=1.10.2",
+  "sentence-stream>=1.3.0",
+  "wyoming>=1.10.2",
 ]
 
+[project.optional-dependencies]
+dev = [
+  "isort>=5",
+  "black>=24",
+]
+
+[project.urls]
+Repository = "https://github.com/mill1000/wyoming-bench"
+Issues = "https://github.com/mill1000/wyoming-bench/issues"
+
 [project.scripts]
-wyoming-tts-bench = "wyoming_tts_bench.cli:main"
+wyoming-bench = "wyoming_bench.cli:main"
 
 [tool.setuptools]
-packages = ["wyoming_tts_bench"]
+include-package-data = false
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["wyoming_bench", "wyoming_bench.*"]
+exclude = ["wyoming_bench.tests", "wyoming_bench.tests.*"]
+
+# Calendar versioning (YYYY.MM.REV, e.g. 2026.9.0): release tags carry the
+# version. setuptools-scm derives it from the latest git tag at build/install
+# time; commits after a tag yield a pre-release such as 2026.9.1.devN. When no
+# tag is reachable the fallback version is used.
+[tool.setuptools_scm]
+fallback_version = "0.0.0+local"
+
+[tool.isort]
+profile = "black"
+known_first_party = ["wyoming_bench"]
+
+[tool.black]
+line-length = 110
+target-version = ["py312"]

@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import secrets
 
+from wyoming.info import Info
 from wyoming.tts import SynthesizeVoice
 
-from .client import MODE_STREAMING, measure_once
+from ..const import MODE_STREAMING
+from ..info import advertised_streaming
+from .client import measure_once
 from .reporting import Measurement
 from .texts import split_sentences
 
@@ -48,8 +51,15 @@ async def _probe_streaming(
     round.
     """
     w = await measure_once(
-        host, port, MODE_STREAMING, _maybe_unique(texts[0], unique), voice, text_format,
-        connect_timeout, min(read_timeout, probe_timeout), chunk_delay,
+        host,
+        port,
+        MODE_STREAMING,
+        _maybe_unique(texts[0], unique),
+        voice,
+        text_format,
+        connect_timeout,
+        min(read_timeout, probe_timeout),
+        chunk_delay,
     )
     return w.ok
 
@@ -69,29 +79,56 @@ async def bench_server(
     read_timeout: float,
     unique: bool = False,
     probe_timeout: float = STREAM_PROBE_TIMEOUT,
+    info: Info | None = None,
 ) -> list[Measurement]:
     """Benchmark one server.
 
     Runs warmup (untimed) then ``rounds`` x ``texts`` per mode, sequentially.
-    When *unique* is set, each measurement gets a nonce-suffixed copy of its
-    text so repeated identical inputs do not hit a server-side synthesis cache.
+    Streaming mode is skipped immediately when the server's advertised info
+    says it is unsupported; otherwise it is probed first and skipped if no
+    audio is returned. When *unique* is set, each measurement gets a
+    nonce-suffixed copy of its text so repeated identical inputs do not hit a
+    server-side synthesis cache.
     """
     measurements: list[Measurement] = []
     for mode in modes:
-        if mode == MODE_STREAMING and not await _probe_streaming(
-            host, port, texts, voice, text_format, unique,
-            connect_timeout, read_timeout, chunk_delay, probe_timeout,
-        ):
-            print(
-                f"  [streaming] NOT SUPPORTED by {host}:{port} "
-                f"(no audio in response to synthesize-*); skipping streaming mode",
-                flush=True,
-            )
-            continue
+        if mode == MODE_STREAMING:
+            if advertised_streaming(info, "tts") is False:
+                print(
+                    f"  [streaming] NOT SUPPORTED by {host}:{port} "
+                    f"(not advertised by server); skipping streaming mode",
+                    flush=True,
+                )
+                continue
+            if not await _probe_streaming(
+                host,
+                port,
+                texts,
+                voice,
+                text_format,
+                unique,
+                connect_timeout,
+                read_timeout,
+                chunk_delay,
+                probe_timeout,
+            ):
+                print(
+                    f"  [streaming] NOT SUPPORTED by {host}:{port} "
+                    f"(no audio in response to synthesize-*); skipping streaming mode",
+                    flush=True,
+                )
+                continue
         for _ in range(warmup):
             w = await measure_once(
-                host, port, mode, _maybe_unique(texts[0], unique), voice, text_format,
-                connect_timeout, read_timeout, chunk_delay,
+                host,
+                port,
+                mode,
+                _maybe_unique(texts[0], unique),
+                voice,
+                text_format,
+                connect_timeout,
+                read_timeout,
+                chunk_delay,
             )
             if verbose:
                 status = "ok" if w.ok else f"FAIL ({w.error})"
@@ -99,8 +136,15 @@ async def bench_server(
         for round_no in range(rounds):
             for text in texts:
                 m = await measure_once(
-                    host, port, mode, _maybe_unique(text, unique), voice, text_format,
-                    connect_timeout, read_timeout, chunk_delay,
+                    host,
+                    port,
+                    mode,
+                    _maybe_unique(text, unique),
+                    voice,
+                    text_format,
+                    connect_timeout,
+                    read_timeout,
+                    chunk_delay,
                 )
                 # Report the sample's real sentence count, not the nonce-suffixed
                 # copy: --unique appends a hex nonce that split_sentences would

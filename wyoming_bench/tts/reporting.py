@@ -1,10 +1,17 @@
-"""Measurement container and plain-text reporting (no CSV export)."""
+"""TTS measurement container and plain-text reporting (no CSV export)."""
 
 from __future__ import annotations
 
-import statistics
-from collections.abc import Sequence
 from dataclasses import dataclass
+
+from ..reporting import (
+    SERVER_COL_WIDTH,
+    _fmt_cell,
+    _fmt_ms_cell,
+    _stat_line,
+    stats,
+    truncate_label,
+)
 
 
 @dataclass
@@ -48,34 +55,6 @@ class Measurement:
         return total / self.audio_duration_s
 
 
-def _percentile(sorted_values: list[float], pct: float) -> float:
-    """Linear-interpolation percentile. *pct* is in [0, 100]."""
-    if not sorted_values:
-        raise ValueError("no values")
-    if len(sorted_values) == 1:
-        return sorted_values[0]
-    rank = (pct / 100.0) * (len(sorted_values) - 1)
-    lo = int(rank)
-    hi = min(lo + 1, len(sorted_values) - 1)
-    frac = rank - lo
-    return sorted_values[lo] + (sorted_values[hi] - sorted_values[lo]) * frac
-
-
-def stats(values: Sequence[float]) -> dict:
-    """Compute min/mean/median/p95/max over *values*. Empty -> all None."""
-    if not values:
-        return {"n": 0, "min": None, "mean": None, "median": None, "p95": None, "max": None}
-    ordered = sorted(values)
-    return {
-        "n": len(values),
-        "min": ordered[0],
-        "mean": statistics.fmean(values),
-        "median": statistics.median(values),
-        "p95": _percentile(ordered, 95),
-        "max": ordered[-1],
-    }
-
-
 def summarize_mode(measurements: list[Measurement], mode: str) -> dict:
     """Aggregate the successful measurements for *mode* into stat dicts."""
     in_mode = [m for m in measurements if m.mode == mode]
@@ -98,26 +77,6 @@ def summarize_mode(measurements: list[Measurement], mode: str) -> dict:
 
 
 # --- plain-text rendering ---------------------------------------------------
-
-
-def _fmt_cell(value: float | None, width: int = 10, decimals: int = 2) -> str:
-    if value is None:
-        return f"{'n/a':>{width}}"
-    return f"{value:>{width}.{decimals}f}"
-
-
-def _fmt_ms_cell(value: float | None, width: int = 10) -> str:
-    if value is None:
-        return f"{'n/a':>{width}}"
-    return f"{value * 1000:>{width}.1f}"
-
-
-def _stat_line(label: str, s: dict, cell=_fmt_cell) -> str:
-    return (
-        f"  {label:<12}"
-        f"min{cell(s['min']):>12} mean{cell(s['mean']):>12}"
-        f"median{cell(s['median']):>12} p95{cell(s['p95']):>12} max{cell(s['max']):>12}"
-    )
 
 
 def print_server_report(server: str, measurements: list[Measurement]) -> None:
@@ -147,8 +106,8 @@ def print_server_report(server: str, measurements: list[Measurement]) -> None:
         print(f"  {'Audio':<12} mean={mean_dur:.2f}s ({mean_dur * 1000:.0f} ms), {mean_bytes:.0f} bytes")
 
 
-def print_comparison(servers: list[str], by_server: dict[str, list[Measurement]]) -> None:
-    """Print a cross-server comparison table, one per mode."""
+def print_summary(servers: list[str], by_server: dict[str, list[Measurement]]) -> None:
+    """Print a summary table, one per mode."""
     modes: list[str] = []
     for ms in by_server.values():
         for m in ms:
@@ -158,23 +117,25 @@ def print_comparison(servers: list[str], by_server: dict[str, list[Measurement]]
         return
     print()
     print("=" * 78)
-    print("Comparison (lower is better)")
+    print("Summary (lower is better)")
     print("=" * 78)
     for mode in modes:
         rows = [(server, summarize_mode(by_server.get(server, []), mode)) for server in servers]
-        rows.sort(key=lambda item: (
-            item[1]["ttft"]["mean"] is None,
-            item[1]["ttft"]["mean"] if item[1]["ttft"]["mean"] is not None else 0.0,
-        ))
+        rows.sort(
+            key=lambda item: (
+                item[1]["ttft"]["mean"] is None,
+                item[1]["ttft"]["mean"] if item[1]["ttft"]["mean"] is not None else 0.0,
+            )
+        )
         print()
         print(f"[{mode}]")
         print(
-            f"  {'server':<24}{'ok':>4}{'TTFT_mean':>12}{'TTFT_p95':>12}"
+            f"  {'server':<{SERVER_COL_WIDTH}}{'ok':>4}{'TTFT_mean':>12}{'TTFT_p95':>12}"
             f"{'Total_mean':>12}{'RTF_mean':>10}{'audio_dur':>12}"
         )
         for server, s in rows:
             print(
-                f"  {server:<24}{s['ok']:>4}"
+                f"  {truncate_label(server):<{SERVER_COL_WIDTH}}{s['ok']:>4}"
                 f"{_fmt_ms_cell(s['ttft']['mean']):>12}"
                 f"{_fmt_ms_cell(s['ttft']['p95']):>12}"
                 f"{_fmt_ms_cell(s['total']['mean']):>12}"
