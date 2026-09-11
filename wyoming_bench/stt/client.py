@@ -68,6 +68,7 @@ async def measure_stt_once(
     connect_timeout: float,
     read_timeout: float,
     chunk_delay: float = 0.0,
+    trailing_silence: float = 0.0,
 ) -> SttMeasurement:
     """Run one transcription against *host*:*port* and return a SttMeasurement.
 
@@ -85,9 +86,9 @@ async def measure_stt_once(
     try:
         await client.connect()
         if mode == MODE_STREAMING:
-            await _run_streaming(client, m, audio, transcribe, chunk_samples, chunk_delay)
+            await _run_streaming(client, m, audio, transcribe, chunk_samples, chunk_delay, trailing_silence)
         else:
-            await _run_non_streaming(client, m, audio, transcribe, chunk_samples)
+            await _run_non_streaming(client, m, audio, transcribe, chunk_samples, trailing_silence)
         if m.t_end is not None:
             m.ok = True
             _fill_accuracy(m)
@@ -110,18 +111,27 @@ async def _send_audio(
     audio: AudioInput,
     chunk_samples: int,
     chunk_delay: float = 0.0,
+    trailing_silence: float = 0.0,
 ) -> None:
     """Send the audio as ``audio-start`` / ``audio-chunk``* / ``audio-stop``.
 
     Chunks are sized to *chunk_samples* (a whole number of samples), so every
     block is valid PCM. *chunk_delay* paces writes (used to simulate real-time
     streaming); ``0`` sends as fast as the socket allows.
+
+    *trailing_silence* (seconds) appends that much zero PCM to the end of the
+    recording **on the wire only**, so streaming (online) ASR models see enough
+    trailing context to finalize their last words. It does not change
+    ``audio.duration_s``, which is what RTF is computed from.
     """
     await client.write_event(
         AudioStart(rate=audio.rate, width=audio.width, channels=audio.channels, timestamp=0).event()
     )
     chunk_bytes = max(1, chunk_samples * audio.width * audio.channels)
     pcm = audio.pcm
+    if trailing_silence > 0:
+        sil_samples = round(trailing_silence * audio.rate)
+        pcm = pcm + b"\x00" * (sil_samples * audio.width * audio.channels)
     offset = 0
     n = len(pcm)
     while offset < n:
@@ -205,10 +215,11 @@ async def _run_non_streaming(
     audio: AudioInput,
     transcribe: Transcribe,
     chunk_samples: int,
+    trailing_silence: float = 0.0,
 ) -> None:
     m.t_sent = time.perf_counter()
     await client.write_event(transcribe.event())
-    await _send_audio(client, audio, chunk_samples)
+    await _send_audio(client, audio, chunk_samples, trailing_silence=trailing_silence)
     await _read_transcript(client, m, Transcript)
 
 
@@ -219,6 +230,7 @@ async def _run_streaming(
     transcribe: Transcribe,
     chunk_samples: int,
     chunk_delay: float,
+    trailing_silence: float = 0.0,
 ) -> None:
     m.t_sent = time.perf_counter()
     # Read concurrently so TTFT is measured from the moment the server starts
@@ -226,7 +238,7 @@ async def _run_streaming(
     reader = asyncio.create_task(_read_transcript(client, m, TranscriptStop))
     try:
         await client.write_event(transcribe.event())
-        await _send_audio(client, audio, chunk_samples, chunk_delay)
+        await _send_audio(client, audio, chunk_samples, chunk_delay, trailing_silence)
     except BaseException:
         reader.cancel()
         raise

@@ -93,6 +93,7 @@ async def bench_stt_server(
     read_timeout: float,
     probe_timeout: float = STREAM_PROBE_TIMEOUT,
     info: Info | None = None,
+    trailing_silence: float = 0.0,
 ) -> list[SttMeasurement]:
     """Benchmark one STT server.
 
@@ -140,6 +141,7 @@ async def bench_stt_server(
                 connect_timeout,
                 read_timeout,
                 chunk_delay,
+                trailing_silence,
             )
             if verbose:
                 status = "ok" if w.ok else f"FAIL ({w.error})"
@@ -156,6 +158,7 @@ async def bench_stt_server(
                     connect_timeout,
                     read_timeout,
                     chunk_delay,
+                    trailing_silence,
                 )
                 measurements.append(m)
                 if verbose:

@@ -236,6 +236,16 @@ def _add_stt_args(p: argparse.ArgumentParser) -> None:
         metavar="SEC",
         help="Seconds between audio-chunk writes in streaming mode (default 0).",
     )
+    p.add_argument(
+        "--trailing-silence",
+        type=float,
+        default=0.5,
+        metavar="SEC",
+        help="Seconds of silence appended to each recording before transcription, "
+        "so streaming (online) ASR models can finalize their last words. RTF is "
+        "still computed on the original audio length. Use 0 to send recordings "
+        "exactly as stored (default 0.5).",
+    )
     _add_run_args(p)
 
 
@@ -491,7 +501,7 @@ async def _async_main_stt(
     print(f"rounds:  {args.rounds}  warmup: {args.warmup}", flush=True)
     print(
         f"probe:   {probe_timeout:g}s  chunk_samples: {args.chunk_samples}  "
-        f"chunk_delay: {args.chunk_delay:g}s",
+        f"chunk_delay: {args.chunk_delay:g}s  trailing_silence: {args.trailing_silence:g}s",
         flush=True,
     )
     total_audio = sum(s.duration_s for s in samples)
@@ -526,6 +536,7 @@ async def _async_main_stt(
             args.timeout,
             probe_timeout,
             info,
+            args.trailing_silence,
         )
         by_server[label] = ms
         print_stt_server_report(label, ms)

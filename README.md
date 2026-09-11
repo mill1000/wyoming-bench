@@ -110,6 +110,14 @@ Accuracy (word-level by default, character-level as a bonus):
 Reference and hypothesis text are normalized before comparison (lowercased,
 punctuation stripped, whitespace collapsed).
 
+By default the bench appends `--trailing-silence` (0.5s) of silence to the end
+of each recording **before** sending it. Streaming (online) ASR models commit
+words incrementally and need a little trailing context to finalize their last
+words; without it they tend to drop the final one or two, which inflates WER.
+RTF is still computed on the original recording length, so the padding does not
+speed up the timing. Set `--trailing-silence 0` to send recordings exactly as
+stored.
+
 ## Corpus format (STT)
 
 `--corpus DIR` points at a directory of `.wav` recordings paired with `.txt`
@@ -177,6 +185,7 @@ STT-specific flags:
 | `--config JSON` | Transcribe JSON, e.g. `{"name": "model", "language": "en"}` (fields: `name`, `language`, `context`, `vad_sensitivity`, `transcript_names`, `transcript_terms`). | `{}` |
 | `--chunk-samples N` | Samples per `audio-chunk` when sending audio. | `1024` |
 | `--chunk-delay SEC` | Seconds to wait between `audio-chunk` writes (streaming). | `0` |
+| `--trailing-silence SEC` | Seconds of silence appended to each recording before transcription (helps streaming/online models finalize their last words; RTF still uses the original length). | `0.5` |
 
 gen-corpus-specific flags:
 

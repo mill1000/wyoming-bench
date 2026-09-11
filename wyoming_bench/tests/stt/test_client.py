@@ -13,7 +13,7 @@ from wyoming.asr import (
     TranscriptStart,
     TranscriptStop,
 )
-from wyoming.audio import AudioStop
+from wyoming.audio import AudioChunk, AudioStop
 from wyoming.error import Error
 from wyoming.event import async_read_event, async_write_event
 
@@ -104,6 +104,44 @@ class TestMeasureSttOnce(unittest.IsolatedAsyncioTestCase):
         m = await self._run([Error(text="boom").event()], MODE_NON_STREAMING)
         self.assertFalse(m.ok)
         self.assertIn("boom", m.error)
+
+    async def test_trailing_silence_appended(self):
+        # With trailing_silence > 0, the PCM sent on the wire is longer than the
+        # input by exactly the silence length (silence_samples * width * channels).
+        captured: dict[str, int] = {"bytes": 0}
+
+        async def handler(reader, writer):
+            try:
+                await async_read_event(reader)  # transcribe
+                await async_read_event(reader)  # audio-start
+                while True:  # audio-chunk* then audio-stop
+                    ev = await async_read_event(reader)
+                    if ev is None or AudioStop.is_type(ev.type):
+                        break
+                    captured["bytes"] += len(AudioChunk.from_event(ev).audio)
+                await async_write_event(Transcript(text=REFERENCE).event(), writer)
+            except (ConnectionResetError, asyncio.IncompleteReadError):
+                pass
+            finally:
+                try:
+                    writer.close()
+                except Exception:  # noqa: BLE001
+                    pass
+                await writer.wait_closed()
+
+        server = await asyncio.start_server(handler, "127.0.0.1", 0)
+        port = server.sockets[0].getsockname()[1]
+        audio = _make_audio()
+        try:
+            await measure_stt_once(
+                "127.0.0.1", port, MODE_NON_STREAMING, audio, Transcribe(), 512, 5.0, 5.0, 0.0, 0.5
+            )
+        finally:
+            server.close()
+            await server.wait_closed()
+
+        expected_silence = int(round(0.5 * audio.rate * audio.width * audio.channels))
+        self.assertEqual(captured["bytes"], len(audio.pcm) + expected_silence)
 
 
 if __name__ == "__main__":

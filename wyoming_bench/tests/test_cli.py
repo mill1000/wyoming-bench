@@ -296,7 +296,13 @@ class TestPreflight(unittest.IsolatedAsyncioTestCase):
         out = io.StringIO()
         try:
             args = argparse.Namespace(
-                rounds=1, warmup=0, verbose=False, chunk_samples=1024, chunk_delay=0.0, timeout=2.0
+                rounds=1,
+                warmup=0,
+                verbose=False,
+                chunk_samples=1024,
+                chunk_delay=0.0,
+                trailing_silence=0.0,
+                timeout=2.0,
             )
             with contextlib.redirect_stdout(out):
                 rc = await cli._async_main_stt(
@@ -341,7 +347,13 @@ class TestPreflight(unittest.IsolatedAsyncioTestCase):
         out = io.StringIO()
         try:
             args = argparse.Namespace(
-                rounds=1, warmup=0, verbose=True, chunk_samples=1024, chunk_delay=0.0, timeout=1.0
+                rounds=1,
+                warmup=0,
+                verbose=True,
+                chunk_samples=1024,
+                chunk_delay=0.0,
+                trailing_silence=0.0,
+                timeout=1.0,
             )
             with contextlib.redirect_stdout(out):
                 rc = await cli._async_main_stt(
