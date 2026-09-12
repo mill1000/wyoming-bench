@@ -9,7 +9,7 @@ from ..reporting import (
     SERVER_COL_WIDTH,
     _fmt_cell,
     _fmt_ms_cell,
-    _stat_line,
+    stat_table,
     stats,
     truncate_label,
 )
@@ -124,10 +124,12 @@ def print_stt_server_report(server: str, measurements: list[SttMeasurement]) -> 
         if s["ok"] == 0 and s["fail"] == 0:
             continue
         print(f"[{mode}] ok={s['ok']} fail={s['fail']}")
-        print(_stat_line("Total (ms)", s["total"], _fmt_ms_cell))
+        rows = [("Total (ms)", s["total"], _fmt_ms_cell)]
         if s["ttft"]["n"] > 0:
-            print(_stat_line("TTFT (ms)", s["ttft"], _fmt_ms_cell))
-        print(_stat_line("RTF (x)", s["rtf"]))
+            rows.append(("TTFT (ms)", s["ttft"], _fmt_ms_cell))
+        rows.append(("RTF (x)", s["rtf"], _fmt_cell))
+        for line in stat_table(rows):
+            print(line)
         mean_dur = s["audio_duration"]["mean"]
         mean_dur = mean_dur if mean_dur is not None else 0.0
         print(f"  {'Audio':<12} mean={mean_dur:.2f}s input")

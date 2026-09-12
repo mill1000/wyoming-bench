@@ -7,7 +7,7 @@ Domain-specific measurement containers and report renderers live in
 from __future__ import annotations
 
 import statistics
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 
 
 def _percentile(sorted_values: list[float], pct: float) -> float:
@@ -62,9 +62,20 @@ def truncate_label(label: str, width: int = SERVER_COL_WIDTH) -> str:
     return label[: width - 3] + "..."
 
 
-def _stat_line(label: str, s: dict, cell=_fmt_cell) -> str:
-    return (
-        f"  {label:<12}"
-        f"min{cell(s['min']):>12} mean{cell(s['mean']):>12}"
-        f"median{cell(s['median']):>12} p95{cell(s['p95']):>12} max{cell(s['max']):>12}"
-    )
+def stat_table(rows: Sequence[tuple[str, dict, Callable[[float | None], str]]]) -> list[str]:
+    """Render (label, stats, cell) rows as an aligned table.
+
+    The stat names (min/mean/median/p95/max) appear once as a column header
+    above the values instead of being repeated on every row.
+    """
+    lines = [
+        f"  {'metric':<12}"
+        f"{'min':>10}{'mean':>10}{'median':>10}{'p95':>10}{'max':>10}"
+    ]
+    for label, s, cell in rows:
+        lines.append(
+            f"  {label:<12}"
+            f"{cell(s['min']):>10}{cell(s['mean']):>10}{cell(s['median']):>10}"
+            f"{cell(s['p95']):>10}{cell(s['max']):>10}"
+        )
+    return lines

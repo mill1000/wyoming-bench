@@ -8,7 +8,7 @@ from ..reporting import (
     SERVER_COL_WIDTH,
     _fmt_cell,
     _fmt_ms_cell,
-    _stat_line,
+    stat_table,
     stats,
     truncate_label,
 )
@@ -96,9 +96,14 @@ def print_server_report(server: str, measurements: list[Measurement]) -> None:
         if s["ok"] == 0 and s["fail"] == 0:
             continue
         print(f"[{mode}] ok={s['ok']} fail={s['fail']}")
-        print(_stat_line("TTFT (ms)", s["ttft"], _fmt_ms_cell))
-        print(_stat_line("Total (ms)", s["total"], _fmt_ms_cell))
-        print(_stat_line("RTF (x)", s["rtf"]))
+        for line in stat_table(
+            [
+                ("TTFT (ms)", s["ttft"], _fmt_ms_cell),
+                ("Total (ms)", s["total"], _fmt_ms_cell),
+                ("RTF (x)", s["rtf"], _fmt_cell),
+            ]
+        ):
+            print(line)
         d = s["audio_duration"]
         b = s["audio_bytes"]
         mean_dur = d["mean"] if d["mean"] is not None else 0.0
