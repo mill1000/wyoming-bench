@@ -68,10 +68,7 @@ def stat_table(rows: Sequence[tuple[str, dict, Callable[[float | None], str]]]) 
     The stat names (min/mean/median/p95/max) appear once as a column header
     above the values instead of being repeated on every row.
     """
-    lines = [
-        f"  {'metric':<12}"
-        f"{'min':>10}{'mean':>10}{'median':>10}{'p95':>10}{'max':>10}"
-    ]
+    lines = [f"  {'metric':<12}" f"{'min':>10}{'mean':>10}{'median':>10}{'p95':>10}{'max':>10}"]
     for label, s, cell in rows:
         lines.append(
             f"  {label:<12}"

@@ -4,7 +4,13 @@ from __future__ import annotations
 
 import unittest
 
-from wyoming_bench.reporting import SERVER_COL_WIDTH, _fmt_cell, stat_table, stats, truncate_label
+from wyoming_bench.reporting import (
+    SERVER_COL_WIDTH,
+    _fmt_cell,
+    stat_table,
+    stats,
+    truncate_label,
+)
 
 
 class TestStatTable(unittest.TestCase):
@@ -30,9 +36,7 @@ class TestStatTable(unittest.TestCase):
 
     def test_multiple_rows_share_one_header(self):
         s = stats([1.0, 2.0, 3.0, 4.0, 9.0])
-        lines = stat_table(
-            [("a", s, _fmt_cell), ("b", s, _fmt_cell)]
-        )
+        lines = stat_table([("a", s, _fmt_cell), ("b", s, _fmt_cell)])
         self.assertEqual(len(lines), 3)
         self.assertEqual(len(lines[0]), len(lines[1]))
 
