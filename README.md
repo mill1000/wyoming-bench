@@ -28,16 +28,14 @@ Every measurement uses a fresh TCP connection, so results are isolated per
 round. Statistics (min / mean / median / p95 / max) are aggregated across
 rounds.
 
+## Vibe Warning
+This project was **vibe coded** with Qwen 3.8 27B and the Zed Agent on local hardware.
+
+
 ## Install
 
 ```sh
-pip install .
-```
-
-or run in place without installing:
-
-```sh
-python3 -c "from wyoming_bench.cli import main; main(['--help'])"
+pipx install wyoming-bench
 ```
 
 ## Usage
@@ -76,11 +74,12 @@ wyoming-bench info 10.100.1.20:10700
 
 ### TTS metrics
 
-- **TTFT** — time to first audio byte (from when the request is sent).
-- **Total** — total wall time until the final `audio-stop` event.
-- **RTF** — total time divided by the duration of the returned audio
-  (lower is better; `< 1` means faster than real time).
-- **Audio** — returned audio duration and byte count.
+| Metric | Meaning |
+| --- | --- |
+| **TTFT** | Time to first audio byte (from when the request is sent). |
+| **Total** | Total wall time until the final `audio-stop` event. |
+| **RTF** | Total time divided by the duration of the returned audio (lower is better; `< 1` means faster than real time). |
+| **Audio** | Returned audio duration and byte count. |
 
 In streaming mode the text is split into sentences (via the
 [sentence-stream](https://github.com/OHF-Voice/sentence-stream) heuristics,
@@ -93,19 +92,20 @@ them. `--chunk-delay` paces those writes.
 
 Speed:
 
-- **Total** — wall time until the final transcript result.
-- **TTFT** — time to the first `transcript-chunk` (streaming mode only).
-- **RTF** — total time divided by the duration of the input audio
-  (lower is better; `< 1` means faster than real time).
+| Metric | Meaning |
+| --- | --- |
+| **Total** | Wall time until the final transcript result. |
+| **TTFT** | Time to the first `transcript-chunk` (streaming mode only). |
+| **RTF** | Total time divided by the duration of the input audio (lower is better; `< 1` means faster than real time). |
 
 Accuracy (word-level by default, character-level as a bonus):
 
-- **WER** — pooled word error rate: `(substitutions + insertions + deletions)`
-  over total reference words across all samples.
-- **CER** — pooled character error rate (over total reference characters).
-- **SAR** — sentence accuracy: the fraction of samples whose normalized
-  transcript exactly matches the reference.
-- **S / I / D** — total substitution / insertion / deletion word counts.
+| Metric | Meaning |
+| --- | --- |
+| **WER** | Pooled word error rate: `(substitutions + insertions + deletions)` over total reference words across all samples. |
+| **CER** | Pooled character error rate (over total reference characters). |
+| **SAR** | Sentence accuracy: the fraction of samples whose normalized transcript exactly matches the reference. |
+| **S / I / D** | Total substitution / insertion / deletion word counts. |
 
 Reference and hypothesis text are normalized before comparison (lowercased,
 punctuation stripped, whitespace collapsed).
