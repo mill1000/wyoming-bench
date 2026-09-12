@@ -23,6 +23,7 @@ class Measurement:
     text: str
     ok: bool = False
     error: str = ""
+    connection_failed: bool = False  # TCP connect failed: server down/unreachable
     t_sent: float = 0.0
     t_first: float | None = None
     t_end: float | None = None

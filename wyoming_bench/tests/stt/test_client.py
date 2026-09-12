@@ -59,6 +59,16 @@ async def _mock_stt_handler(reader, writer, reply):
 
 
 class TestMeasureSttOnce(unittest.IsolatedAsyncioTestCase):
+    async def test_unreachable_sets_connection_failed(self):
+        # Nothing listens on 127.0.0.1:1: the measurement must fail fast and
+        # flag the connection failure so callers skip the rest of the batch.
+        m = await measure_stt_once(
+            "127.0.0.1", 1, MODE_NON_STREAMING, _make_audio(), Transcribe(), 512, 1.0, 1.0
+        )
+        self.assertFalse(m.ok)
+        self.assertTrue(m.connection_failed)
+        self.assertIn("unavailable", m.error)
+
     async def _run(self, reply, mode):
         server = await asyncio.start_server(lambda r, w: _mock_stt_handler(r, w, reply), "127.0.0.1", 0)
         port = server.sockets[0].getsockname()[1]

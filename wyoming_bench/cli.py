@@ -367,18 +367,34 @@ def _resolve_probe_timeout(args: argparse.Namespace, default: float) -> float:
     return args.probe_timeout if args.probe_timeout is not None else default
 
 
+def _exc_detail(e: Exception) -> str:
+    """Render *e* as ``TypeName: message``, dropping an empty message."""
+    return f"{type(e).__name__}: {e}".rstrip(": ")
+
+
 async def _preflight_check(host: str, port: int, service: str, timeout: float) -> tuple[bool, Info | None]:
     """Return ``(proceed, info)`` for *host:port* advertising *service*.
 
     *service* is ``"tts"`` or ``"asr"``. Queries the server once via
-    ``describe``/``info``. If the server cannot be queried at all (unreachable,
-    timeout, no describe support) the check passes, *info* is ``None``, and the
-    real benchmark is attempted, where the usual timeouts apply. If the server
-    answers but does not list the requested service, a notice is printed and
-    ``(False, info)`` is returned so the caller skips that server. When the
-    service is advertised (or unknown), ``(True, info)`` is returned.
+    ``describe``/``info``. If the connection itself fails (unreachable,
+    refused, connect timeout) the server is skipped with a notice: it is
+    down, and re-attempting every round would only burn the full timeout
+    per measurement. If the server connects but cannot be queried (read
+    timeout, no describe support), the check passes, *info* is ``None``,
+    and the real benchmark is attempted, where the usual timeouts apply.
+    If the server answers but does not list the requested service, a notice
+    is printed and ``(False, info)`` is returned so the caller skips that
+    server. When the service is advertised (or unknown), ``(True, info)``
+    is returned.
     """
-    info = await fetch_info(host, port, timeout)
+    try:
+        info = await fetch_info(host, port, timeout)
+    except (OSError, asyncio.TimeoutError) as e:
+        print(
+            f"  [preflight] {host}:{port} unavailable ({_exc_detail(e)}); skipping server",
+            flush=True,
+        )
+        return False, None
     if info is None:
         return True, None
     services = available_services(info)
@@ -694,9 +710,14 @@ async def _async_main_info(servers: list[tuple[str, int]], timeout: float) -> in
     for host, port in servers:
         print(flush=True)
         print(f"=== {host}:{port} ===", flush=True)
-        info = await fetch_info(host, port, timeout)
+        try:
+            info = await fetch_info(host, port, timeout)
+        except (OSError, asyncio.TimeoutError) as e:
+            print(f"  (unavailable: {_exc_detail(e)})", flush=True)
+            failed = True
+            continue
         if info is None:
-            print("  (no info response: unreachable, timeout, or no describe support)", flush=True)
+            print("  (no info response: read timeout, no describe support, or closed connection)", flush=True)
             failed = True
             continue
         for line in describe_services(info):

@@ -339,6 +339,23 @@ class TestPreflight(unittest.IsolatedAsyncioTestCase):
         self.assertIn("[preflight]", out.getvalue())
         self.assertIn("skipping", out.getvalue())
 
+    async def test_tts_unreachable_server_skipped_fast(self):
+        # A down server (nothing on 127.0.0.1:1) must be skipped by the
+        # preflight: no benchmark runs are attempted, and the exit code is 1.
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            args = argparse.Namespace(
+                rounds=3, warmup=1, verbose=False, chunk_delay=0.0, timeout=2.0, unique=False
+            )
+            rc = await cli._async_main_tts(
+                args, [("127.0.0.1", 1)], ["hello"], [MODE_NON_STREAMING], None, None, 2.0
+            )
+        self.assertEqual(rc, 1)
+        self.assertIn("[preflight]", out.getvalue())
+        self.assertIn("unavailable", out.getvalue())
+        self.assertIn("skipping server", out.getvalue())
+        self.assertNotIn("FAIL", out.getvalue())  # no benchmark run was attempted
+
     async def test_stt_proceeds_when_asr_advertised(self):
         # Preflight must not over-block: with asr advertised the real benchmark
         # runs (and fails against the mock, which only answers describe).

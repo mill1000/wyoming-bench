@@ -29,15 +29,20 @@ async def fetch_info(host: str, port: int, timeout: float) -> Info | None:
     """Return the services advertised by *host:port*, or ``None`` if unknown.
 
     Sends one ``describe`` event and reads until the ``info`` response
-    arrives. ``None`` means "cannot be determined": the connection failed,
-    the read timed out, the server sent an error event, or the connection
+    arrives. Connection-level failures (refused, unreachable, connect
+    timeout) are raised as ``OSError``/``TimeoutError``: the server is
+    down, so callers should skip it rather than re-attempt every
+    measurement. ``None`` means "reachable but cannot be determined": the
+    read timed out, the server sent an error event, or the connection
     closed without an info response (e.g. a server that predates describe
     support). Callers should still attempt the real benchmark in that case,
     where the usual connect/read timeouts apply.
     """
     client = AsyncTcpClient(host, port, connect_timeout=timeout, read_timeout=timeout)
+    # Let connect() failures propagate: a failed connect means the server is
+    # unavailable, which callers handle differently from "unknown".
+    await client.connect()
     try:
-        await client.connect()
         await client.write_event(Describe().event())
         while True:
             event = await client.read_event()
@@ -48,7 +53,7 @@ async def fetch_info(host: str, port: int, timeout: float) -> Info | None:
             if Info.is_type(event.type):
                 return Info.from_event(event)
             # Ignore unrelated events; keep reading for info.
-    except Exception:  # noqa: BLE001 - any probe failure means "unknown"
+    except Exception:  # noqa: BLE001 - reachable, but no usable info
         return None
     finally:
         try:

@@ -150,10 +150,11 @@ class TestFetchInfo(unittest.IsolatedAsyncioTestCase):
             info = await fetch_info("127.0.0.1", port, 5.0)
         self.assertIsNone(info)
 
-    async def test_unreachable_returns_none(self):
-        # Nothing listens on this port; connect must fail fast and return None.
-        info = await fetch_info("127.0.0.1", 1, 2.0)
-        self.assertIsNone(info)
+    async def test_unreachable_raises(self):
+        # Nothing listens on this port: the connection failure must propagate
+        # (server unavailable), not be reported as "unknown".
+        with self.assertRaises(ConnectionRefusedError):
+            await fetch_info("127.0.0.1", 1, 2.0)
 
 
 class TestAdvertisedStreaming(unittest.TestCase):

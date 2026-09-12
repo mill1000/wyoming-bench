@@ -57,7 +57,7 @@ async def _probe_streaming(
         _maybe_unique(texts[0], unique),
         voice,
         text_format,
-        connect_timeout,
+        min(connect_timeout, probe_timeout),
         min(read_timeout, probe_timeout),
         chunk_delay,
     )
@@ -88,7 +88,9 @@ async def bench_server(
     says it is unsupported; otherwise it is probed first and skipped if no
     audio is returned. When *unique* is set, each measurement gets a
     nonce-suffixed copy of its text so repeated identical inputs do not hit a
-    server-side synthesis cache.
+    server-side synthesis cache. A measurement that fails to connect means
+    the server is down/unreachable; the remaining runs (including other
+    modes) are skipped instead of each paying the connect timeout again.
     """
     measurements: list[Measurement] = []
     for mode in modes:
@@ -130,6 +132,9 @@ async def bench_server(
                 read_timeout,
                 chunk_delay,
             )
+            if w.connection_failed:
+                _report_unreachable(host, port, w.error)
+                return measurements
             if verbose:
                 status = "ok" if w.ok else f"FAIL ({w.error})"
                 print(f"[warmup:{mode}] {status}", flush=True)
@@ -146,6 +151,10 @@ async def bench_server(
                     read_timeout,
                     chunk_delay,
                 )
+                if m.connection_failed:
+                    _report_unreachable(host, port, m.error)
+                    measurements.append(m)
+                    return measurements
                 # Report the sample's real sentence count, not the nonce-suffixed
                 # copy: --unique appends a hex nonce that split_sentences would
                 # otherwise count as an extra sentence.
@@ -154,6 +163,11 @@ async def bench_server(
                 if verbose:
                     _print_verbose(mode, round_no, m)
     return measurements
+
+
+def _report_unreachable(host: str, port: int, error: str) -> None:
+    """Report that *host:port* is down; the caller stops measuring it."""
+    print(f"  [unreachable] {host}:{port} {error}; skipping remaining runs", flush=True)
 
 
 def _print_verbose(mode: str, round_no: int, m: Measurement) -> None:

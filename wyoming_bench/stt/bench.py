@@ -46,7 +46,10 @@ async def _probe_stt_streaming(
     timeout so the probe is fast either way.
     """
     client = AsyncTcpClient(
-        host, port, connect_timeout=connect_timeout, read_timeout=min(read_timeout, probe_timeout)
+        host,
+        port,
+        connect_timeout=min(connect_timeout, probe_timeout),
+        read_timeout=min(read_timeout, probe_timeout),
     )
     try:
         await client.connect()
@@ -100,7 +103,10 @@ async def bench_stt_server(
     Runs warmup (untimed) then ``rounds`` x ``samples`` per mode, sequentially.
     Streaming mode is skipped immediately when the server's advertised info
     says it is unsupported; otherwise it is probed first (on the shortest
-    sample) and skipped if the server does not stream transcript chunks.
+    sample) and skipped if the server does not stream transcript chunks. A
+    measurement that fails to connect means the server is down/unreachable;
+    the remaining runs (including other modes) are skipped instead of each
+    paying the connect timeout again.
     """
     measurements: list[SttMeasurement] = []
     probe_sample = min(samples, key=lambda s: s.duration_s) if samples else None
@@ -143,6 +149,9 @@ async def bench_stt_server(
                 chunk_delay,
                 trailing_silence,
             )
+            if w.connection_failed:
+                _report_unreachable_stt(host, port, w.error)
+                return measurements
             if verbose:
                 status = "ok" if w.ok else f"FAIL ({w.error})"
                 print(f"[warmup:{mode}] {w.sample_id}: {status}", flush=True)
@@ -160,10 +169,19 @@ async def bench_stt_server(
                     chunk_delay,
                     trailing_silence,
                 )
+                if m.connection_failed:
+                    _report_unreachable_stt(host, port, m.error)
+                    measurements.append(m)
+                    return measurements
                 measurements.append(m)
                 if verbose:
                     _print_verbose_stt(mode, round_no, m)
     return measurements
+
+
+def _report_unreachable_stt(host: str, port: int, error: str) -> None:
+    """Report that *host:port* is down; the caller stops measuring it."""
+    print(f"  [unreachable] {host}:{port} {error}; skipping remaining runs", flush=True)
 
 
 def _print_verbose_stt(mode: str, round_no: int, m: SttMeasurement) -> None:

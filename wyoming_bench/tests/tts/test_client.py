@@ -10,7 +10,7 @@ from wyoming.event import async_read_event, async_write_event
 from wyoming.tts import SynthesizeVoice
 
 from wyoming_bench.const import MODE_NON_STREAMING
-from wyoming_bench.tts.client import synthesize_audio
+from wyoming_bench.tts.client import measure_once, synthesize_audio
 
 PCM = b"\x00\x01" * 512  # 512 bytes = 256 int16 mono samples
 
@@ -31,6 +31,17 @@ async def _mock_tts_handler(reader, writer):
         except Exception:  # noqa: BLE001
             pass
         await writer.wait_closed()
+
+
+class TestMeasureOnce(unittest.IsolatedAsyncioTestCase):
+    async def test_unreachable_sets_connection_failed(self):
+        # Nothing listens on 127.0.0.1:1: the measurement must fail fast and
+        # flag the connection failure so callers skip the rest of the batch.
+        m = await measure_once("127.0.0.1", 1, MODE_NON_STREAMING, "hello", None, None, 1.0, 1.0)
+        self.assertFalse(m.ok)
+        self.assertTrue(m.connection_failed)
+        self.assertIn("unavailable", m.error)
+        self.assertIsNone(m.ttft_s)
 
 
 class TestSynthesizeAudio(unittest.IsolatedAsyncioTestCase):

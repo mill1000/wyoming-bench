@@ -74,6 +74,8 @@ async def measure_stt_once(
 
     Failures are captured on the returned measurement (``ok=False`` +
     ``error``) rather than raised, so a single bad run cannot abort a batch.
+    A failed TCP connect additionally sets ``connection_failed``, so callers
+    can stop re-attempting a down server instead of paying the timeout again.
     """
     m = SttMeasurement(
         server=f"{host}:{port}",
@@ -84,7 +86,16 @@ async def measure_stt_once(
     )
     client = AsyncTcpClient(host, port, connect_timeout=connect_timeout, read_timeout=read_timeout)
     try:
-        await client.connect()
+        try:
+            await client.connect()
+        except asyncio.TimeoutError:
+            m.error = f"unavailable: connection timed out (>{connect_timeout:g}s)"
+            m.connection_failed = True
+            return m
+        except OSError as e:
+            m.error = f"unavailable: {type(e).__name__}: {e}"
+            m.connection_failed = True
+            return m
         if mode == MODE_STREAMING:
             await _run_streaming(client, m, audio, transcribe, chunk_samples, chunk_delay, trailing_silence)
         else:

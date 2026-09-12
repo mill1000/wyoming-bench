@@ -10,11 +10,13 @@ from __future__ import annotations
 import contextlib
 import io
 import unittest
+from unittest.mock import patch
 
 from wyoming.asr import Transcribe
 
-from wyoming_bench.const import MODE_STREAMING
+from wyoming_bench.const import MODE_NON_STREAMING, MODE_STREAMING
 from wyoming_bench.stt.bench import bench_stt_server
+from wyoming_bench.stt.reporting import SttMeasurement
 from wyoming_bench.tests.stt.test_client import _make_audio
 from wyoming_bench.tests.test_info import make_info
 
@@ -65,6 +67,44 @@ class TestBenchSttServerStreamingSkip(unittest.IsolatedAsyncioTestCase):
         ms, out = await _run(None)
         self.assertEqual(ms, [])
         self.assertIn("no transcript-chunk in response", out)
+
+
+class TestBenchSttServerUnreachable(unittest.IsolatedAsyncioTestCase):
+    async def test_skips_remaining_runs_after_connection_failure(self):
+        calls: list[str] = []
+
+        async def fake_measure_stt_once(*args):
+            mode, audio = args[2], args[3]
+            calls.append(f"{mode}:{audio.sample_id}")
+            m = SttMeasurement(server="127.0.0.1:1", mode=mode, sample_id=audio.sample_id)
+            m.error = "unavailable: ConnectionRefusedError: [Errno 111] Connection refused"
+            m.connection_failed = True
+            return m
+
+        out = io.StringIO()
+        with patch("wyoming_bench.stt.bench.measure_stt_once", side_effect=fake_measure_stt_once):
+            with contextlib.redirect_stdout(out):
+                ms = await bench_stt_server(
+                    "127.0.0.1",
+                    1,
+                    [_make_audio()],
+                    [MODE_NON_STREAMING, MODE_STREAMING],
+                    Transcribe(),
+                    3,
+                    1,
+                    False,
+                    1024,
+                    0.0,
+                    1.0,
+                    1.0,
+                    1.0,
+                    None,
+                )
+        # The first warmup already proved the server is down: the streaming
+        # probe and all rounds must not be attempted.
+        self.assertEqual(calls, ["non_streaming:sample"])
+        self.assertEqual(ms, [])
+        self.assertIn("unreachable", out.getvalue())
 
 
 if __name__ == "__main__":

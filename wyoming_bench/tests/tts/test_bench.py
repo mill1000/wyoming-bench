@@ -10,10 +10,12 @@ from __future__ import annotations
 import contextlib
 import io
 import unittest
+from unittest.mock import patch
 
-from wyoming_bench.const import MODE_STREAMING
+from wyoming_bench.const import MODE_NON_STREAMING, MODE_STREAMING
 from wyoming_bench.tests.test_info import make_info
 from wyoming_bench.tts.bench import bench_server
+from wyoming_bench.tts.reporting import Measurement
 
 
 async def _run(info):
@@ -63,6 +65,45 @@ class TestBenchServerStreamingSkip(unittest.IsolatedAsyncioTestCase):
         ms, out = await _run(None)
         self.assertEqual(ms, [])
         self.assertIn("no audio in response", out)
+
+
+class TestBenchServerUnreachable(unittest.IsolatedAsyncioTestCase):
+    async def test_skips_remaining_runs_after_connection_failure(self):
+        calls: list[str] = []
+
+        async def fake_measure_once(*args):
+            mode, text = args[2], args[3]
+            calls.append(f"{mode}:{text}")
+            m = Measurement(server="127.0.0.1:1", mode=mode, text=text)
+            m.error = "unavailable: ConnectionRefusedError: [Errno 111] Connection refused"
+            m.connection_failed = True
+            return m
+
+        out = io.StringIO()
+        with patch("wyoming_bench.tts.bench.measure_once", side_effect=fake_measure_once):
+            with contextlib.redirect_stdout(out):
+                ms = await bench_server(
+                    "127.0.0.1",
+                    1,
+                    ["a", "b", "c"],
+                    [MODE_NON_STREAMING, MODE_STREAMING],
+                    None,
+                    None,
+                    3,
+                    1,
+                    False,
+                    0.0,
+                    1.0,
+                    1.0,
+                    False,
+                    1.0,
+                    None,
+                )
+        # The first warmup already proved the server is down: the streaming
+        # probe and all rounds must not be attempted.
+        self.assertEqual(calls, ["non_streaming:a"])
+        self.assertEqual(ms, [])
+        self.assertIn("unreachable", out.getvalue())
 
 
 if __name__ == "__main__":
