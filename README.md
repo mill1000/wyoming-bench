@@ -8,8 +8,10 @@ Benchmark servers that speak the [Wyoming protocol](https://github.com/OHF-Voice
 - **STT** — speech-to-text (ASR) servers, via the **non-streaming** and
   **streaming** (`transcript-start` / `transcript-chunk` / `transcript-stop`)
   transcription paths. Reports speed **and** word-level accuracy.
-- **gen-corpus** — synthesize a test corpus from a TTS server to feed the STT
-  benchmark (a realistic TTS→STT round-trip).
+- **generate-corpus** — synthesize a test corpus from a TTS server to feed the
+  STT benchmark (a realistic TTS→STT round-trip).
+- **seed-corpus** — transcribe existing recordings (no transcripts) with an STT
+  server, writing a `.txt` next to each `.wav` for manual review.
 - **info** — query a server's advertised services (`describe`/`info`), so you
   can see whether it speaks TTS, STT, or both, and whether it supports
   streaming.
@@ -64,9 +66,14 @@ wyoming-bench stt a:10700 b:10700 --corpus ./samples --rounds 3
 wyoming-bench stt a:10700 --mode streaming --corpus ./samples --chunk-delay 0.1 -v
 
 # Generate a corpus from a TTS server, then benchmark an STT server on it
-wyoming-bench gen-corpus tts:10210 --out ./tts-samples \
+wyoming-bench generate-corpus tts:10210 --out ./tts-samples \
     --texts "The quick brown fox jumps over the lazy dog."
 wyoming-bench stt asr:10700 --corpus ./tts-samples
+
+# Seed a corpus: transcribe existing recordings (no transcripts) with an STT server
+wyoming-bench seed-corpus asr:10700 --corpus ./recordings
+# ... review/correct the .txt files, then benchmark on the seeded corpus
+wyoming-bench stt asr:10700 --corpus ./recordings
 
 # Inspect what a server offers before benchmarking it
 wyoming-bench info 10.100.1.20:10700
@@ -138,12 +145,12 @@ samples/
 
 ## Generating a test corpus from a TTS server
 
-Prefer not to record audio? `gen-corpus` synthesizes text with a TTS server and
+Prefer not to record audio? `generate-corpus` synthesizes text with a TTS server and
 saves each sample as a `.wav` plus the source text as its `.txt` reference. A
 TTS→STT round-trip then yields a realistic word-error-rate measurement:
 
 ```sh
-wyoming-bench gen-corpus tts:10210 --out ./tts-samples \
+wyoming-bench generate-corpus tts:10210 --out ./tts-samples \
     --config '{"voice": "en_US-lessac-medium"}'
 wyoming-bench stt asr:10700 --corpus ./tts-samples
 ```
@@ -151,20 +158,40 @@ wyoming-bench stt asr:10700 --corpus ./tts-samples
 The WAV is saved in whatever format the TTS server emits — make sure that format
 is acceptable to the STT server (most resample internally, but check yours).
 
+## Seeding a corpus from existing recordings
+
+Already have recordings but no transcripts? `seed-corpus` transcribes every `.wav` in a
+directory with a Wyoming STT server (non-streaming) and writes the result next
+to each recording (`<stem>.txt`):
+
+```sh
+wyoming-bench seed-corpus asr:10700 --corpus ./recordings
+```
+
+- Recordings that already have a `.txt` are **skipped** by default, so reviewed
+  transcripts are never clobbered; pass `--overwrite` to re-transcribe them.
+- The transcripts are written as the server returned them (trimmed, one per
+  line) and are not verified against anything — reviewing and correcting the
+  `.txt` files is a manual step before benchmarking:
+  `wyoming-bench stt asr:10700 --corpus ./recordings`.
+
 ## Options
 
 All subcommands take the server(s) as positional arguments (`SERVER` is `HOST`
-or `HOST:PORT`, repeatable). `tts`, `stt`, and `gen-corpus` share these flags
-(in addition to their own):
+or `HOST:PORT`, repeatable). `tts` and `stt` share these flags (in addition
+to their own):
 
 | Flag | Description | Default |
 | --- | --- | --- |
 | `--rounds N` | Timed measurement rounds per sample per mode. | `3` |
 | `--warmup N` | Untimed warmup runs per mode. | `1` |
 | `--mode {non_streaming,streaming,both}` | Path(s) to exercise. | `both` |
-| `--probe-timeout SEC` | Per-event timeout for one-off probes (streaming capability, describe preflight). | `8` |
-| `--timeout SEC` | Connect and per-event read timeout. | `60` |
 | `-v, --verbose` | Print one line per measurement. | off |
+
+Every subcommand also takes `--timeout SEC` — the connect and per-event read
+timeout (for `info`, the whole describe exchange). It defaults to `60` (`5`
+for `info`); the one-off describe/streaming probes are additionally capped at
+`8s`, so a server that never answers is skipped quickly.
 
 TTS-specific flags:
 
@@ -187,7 +214,7 @@ STT-specific flags:
 | `--chunk-delay SEC` | Seconds to wait between `audio-chunk` writes (streaming). | `0` |
 | `--trailing-silence SEC` | Seconds of silence appended to each recording before transcription (helps streaming/online models finalize their last words; RTF still uses the original length). | `0.5` |
 
-gen-corpus-specific flags:
+generate-corpus-specific flags:
 
 | Flag | Description | Default |
 | --- | --- | --- |
@@ -199,14 +226,18 @@ gen-corpus-specific flags:
 | `--config JSON` | Voice/format JSON (same as `tts`). | `{}` |
 | `--prefix PFX` | File name prefix (`sample_01.wav`, …). | `sample` |
 | `--overwrite` | Overwrite existing files. | off |
-| `--probe-timeout SEC` | Per-event timeout for the one-off describe preflight. | `8` |
-| `--timeout SEC` | Connect and per-event read timeout. | `60` |
 
-`info`-specific flags:
+seed-corpus-specific flags:
 
 | Flag | Description | Default |
 | --- | --- | --- |
-| `--timeout SEC` | Timeout for the describe exchange. | `5` |
+| `--corpus DIR` | Directory of `.wav` recordings to transcribe; each transcript is written next to its recording (required). | — |
+| `--config JSON` | Transcribe JSON (same as `stt`). | `{}` |
+| `--chunk-samples N` | Samples per `audio-chunk` when sending audio. | `1024` |
+| `--trailing-silence SEC` | Seconds of silence appended to each recording before transcription (helps streaming/online models finalize their last words). | `0.5` |
+| `--overwrite` | Overwrite existing `.txt` transcripts (skipped by default). | off |
+
+`info` takes no flags beyond the shared ones (its `--timeout` default is `5`).
 
 A bare `HOST` uses port `10700` (the Wyoming default).
 

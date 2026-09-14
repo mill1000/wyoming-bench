@@ -24,7 +24,8 @@ from .info import (
 )
 from .stt.bench import STREAM_PROBE_TIMEOUT as STT_PROBE_TIMEOUT
 from .stt.bench import bench_stt_server
-from .stt.corpus import load_corpus
+from .stt.client import transcribe_audio
+from .stt.corpus import AudioInput, load_corpus, load_recordings
 from .stt.reporting import SttMeasurement, print_stt_server_report, print_stt_summary
 from .tts.bench import STREAM_PROBE_TIMEOUT as TTS_PROBE_TIMEOUT
 from .tts.bench import bench_server
@@ -67,27 +68,25 @@ def _add_servers(p: argparse.ArgumentParser, help_text: str) -> None:
     )
 
 
+def _add_timeout(p: argparse.ArgumentParser, default: float = 60.0, help: str | None = None) -> None:
+    """--timeout, defined once and shared by every subcommand."""
+    p.add_argument(
+        "--timeout",
+        type=float,
+        default=default,
+        metavar="SEC",
+        help=help
+        or f"Connect and per-event read timeout in seconds; the describe preflight "
+        f"and streaming-capability probes are additionally capped at 8s (default {default:g}).",
+    )
+
+
 def _add_run_args(p: argparse.ArgumentParser) -> None:
     p.add_argument(
         "--rounds", type=int, default=3, help="Timed measurement rounds per sample per mode (default 3)."
     )
     p.add_argument("--warmup", type=int, default=1, help="Untimed warmup runs per mode (default 1).")
-    p.add_argument(
-        "--probe-timeout",
-        type=float,
-        default=None,
-        metavar="SEC",
-        help="Per-event timeout for one-off probes: the streaming-capability "
-        "probe, and the describe preflight that skips a server which does not "
-        "advertise the requested service.",
-    )
-    p.add_argument(
-        "--timeout",
-        type=float,
-        default=60.0,
-        metavar="SEC",
-        help="Connect and per-event read timeout in seconds (default 60).",
-    )
+    _add_timeout(p)
     p.add_argument("-v", "--verbose", action="store_true", help="Print one line per measurement.")
 
 
@@ -333,20 +332,51 @@ def _add_gen_args(p: argparse.ArgumentParser) -> None:
     p.add_argument(
         "--overwrite", action="store_true", help="Overwrite existing files in the output directory."
     )
+    _add_timeout(p)
+
+
+# --- seed -------------------------------------------------------------------
+
+
+def _add_seed_args(p: argparse.ArgumentParser) -> None:
+    _add_servers(p, "STT server(s) to transcribe with, as HOST or HOST:PORT (default port: 10700).")
     p.add_argument(
-        "--probe-timeout",
-        type=float,
-        default=None,
-        metavar="SEC",
-        help="Per-event timeout for the one-off describe preflight probe.",
+        "--corpus",
+        type=str,
+        required=True,
+        metavar="DIR",
+        help="Directory of .wav recordings to transcribe. Each transcript is "
+        "written next to its recording as <stem>.txt for manual review.",
     )
     p.add_argument(
-        "--timeout",
-        type=float,
-        default=60.0,
-        metavar="SEC",
-        help="Connect and per-event read timeout in seconds (default 60).",
+        "--config",
+        type=str,
+        default="{}",
+        metavar="JSON",
+        help='Transcribe JSON, e.g. \'{"name":"model","language":"en"}\' (same as stt).',
     )
+    p.add_argument(
+        "--chunk-samples",
+        type=int,
+        default=1024,
+        metavar="N",
+        help="Samples per audio-chunk when sending audio (default 1024).",
+    )
+    p.add_argument(
+        "--trailing-silence",
+        type=float,
+        default=0.5,
+        metavar="SEC",
+        help="Seconds of silence appended to each recording before transcription, "
+        "so streaming (online) ASR models can finalize their last words "
+        "(default 0.5; use 0 to send recordings exactly as stored).",
+    )
+    p.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Overwrite existing .txt transcripts (they are skipped by default).",
+    )
+    _add_timeout(p)
 
 
 # --- shared parsing helpers -------------------------------------------------
@@ -364,7 +394,8 @@ def _collect_servers(args: argparse.Namespace) -> list[tuple[str, int]]:
 
 
 def _resolve_probe_timeout(args: argparse.Namespace, default: float) -> float:
-    return args.probe_timeout if args.probe_timeout is not None else default
+    """Probes respect --timeout, but never exceed the 8s probe budget."""
+    return min(args.timeout, default)
 
 
 def _exc_detail(e: Exception) -> str:
@@ -480,8 +511,6 @@ def _main_tts(args: argparse.Namespace) -> int:
     if args.timeout <= 0:
         raise SystemExit("--timeout must be > 0")
     probe_timeout = _resolve_probe_timeout(args, TTS_PROBE_TIMEOUT)
-    if probe_timeout <= 0:
-        raise SystemExit("--probe-timeout must be > 0")
 
     try:
         voice, text_format = parse_tts_config(args.config)
@@ -580,8 +609,6 @@ def _main_stt(args: argparse.Namespace) -> int:
     if args.chunk_delay < 0:
         raise SystemExit("--chunk-delay must be >= 0")
     probe_timeout = _resolve_probe_timeout(args, STT_PROBE_TIMEOUT)
-    if probe_timeout <= 0:
-        raise SystemExit("--probe-timeout must be > 0")
 
     try:
         transcribe = parse_stt_config(args.config)
@@ -614,7 +641,7 @@ async def _async_gen_corpus(
     probe_timeout: float,
 ) -> int:
     host, port = servers[0]
-    print(f"wyoming-bench {__version__} (gen-corpus)", flush=True)
+    print(f"wyoming-bench {__version__} (generate-corpus)", flush=True)
     print(f"tts server: {host}:{port}", flush=True)
     print(f"out:      {args.out}   mode: {mode}   prefix: {args.prefix}", flush=True)
     print(f"texts:    {len(texts)} sample(s)", flush=True)
@@ -673,12 +700,10 @@ async def _async_gen_corpus(
 def _main_gen_corpus(args: argparse.Namespace) -> int:
     servers = _collect_servers(args)
     if len(servers) > 1:
-        print("note: gen-corpus uses the first listed server only", file=sys.stderr)
+        print("note: generate-corpus uses the first listed server only", file=sys.stderr)
     if args.timeout <= 0:
         raise SystemExit("--timeout must be > 0")
     probe_timeout = _resolve_probe_timeout(args, TTS_PROBE_TIMEOUT)
-    if probe_timeout <= 0:
-        raise SystemExit("--probe-timeout must be > 0")
     try:
         voice, text_format = parse_tts_config(args.config)
     except json.JSONDecodeError as e:
@@ -690,18 +715,95 @@ def _main_gen_corpus(args: argparse.Namespace) -> int:
     return asyncio.run(_async_gen_corpus(args, servers, texts, mode, voice, text_format, probe_timeout))
 
 
+# --- seed runner ------------------------------------------------------------
+
+
+async def _async_seed_corpus(
+    args: argparse.Namespace,
+    servers: list[tuple[str, int]],
+    samples: list[AudioInput],
+    transcribe: Transcribe,
+    probe_timeout: float,
+) -> int:
+    host, port = servers[0]
+    print(f"wyoming-bench {__version__} (seed-corpus)", flush=True)
+    print(f"stt server: {host}:{port}", flush=True)
+    print(f"corpus:   {args.corpus}", flush=True)
+    total_audio = sum(s.duration_s for s in samples)
+    print(f"recordings: {len(samples)} sample(s), {total_audio:.1f}s audio", flush=True)
+    if transcribe.name is not None:
+        print(f"model:   {transcribe.name}", flush=True)
+    if transcribe.language is not None:
+        print(f"language: {transcribe.language}", flush=True)
+
+    proceed, _ = await _preflight_check(host, port, "asr", probe_timeout)
+    if not proceed:
+        return 1
+
+    n_ok = n_skip = n_fail = 0
+    for sample in samples:
+        txt_path = sample.audio_path.with_suffix(".txt")
+        if txt_path.exists() and not args.overwrite:
+            print(f"  [skip] {sample.sample_id}: {txt_path.name} exists (use --overwrite)", flush=True)
+            n_skip += 1
+            continue
+        try:
+            text = await transcribe_audio(
+                host,
+                port,
+                sample,
+                transcribe,
+                args.chunk_samples,
+                args.timeout,
+                args.timeout,
+            )
+        except asyncio.TimeoutError:
+            print(f"  [fail] {sample.sample_id}: timed out (>{args.timeout:.0f}s per event)", flush=True)
+            n_fail += 1
+            continue
+        except Exception as e:  # noqa: BLE001
+            print(f"  [fail] {sample.sample_id}: {type(e).__name__}: {e}", flush=True)
+            n_fail += 1
+            continue
+        txt_path.write_text(text.strip() + "\n", encoding="utf-8")
+        n_ok += 1
+        n_words = len(text.split())
+        print(f"  [ok]   {sample.sample_id}: {sample.duration_s:.2f}s -> {n_words} word(s)", flush=True)
+
+    print(flush=True)
+    print(f"Wrote {n_ok} transcript(s) to {args.corpus} ({n_skip} skipped, {n_fail} failed)", flush=True)
+    if n_ok or n_skip:
+        print("Review the .txt files, then benchmark, e.g.:", flush=True)
+        print(f"  wyoming-bench stt STT_HOST[:PORT] --corpus {args.corpus}", flush=True)
+    return 0 if n_ok else 1
+
+
+def _main_seed_corpus(args: argparse.Namespace) -> int:
+    servers = _collect_servers(args)
+    if len(servers) > 1:
+        print("note: seed-corpus uses the first listed server only", file=sys.stderr)
+    if args.timeout <= 0:
+        raise SystemExit("--timeout must be > 0")
+    if args.chunk_samples < 1:
+        raise SystemExit("--chunk-samples must be >= 1")
+    probe_timeout = _resolve_probe_timeout(args, STT_PROBE_TIMEOUT)
+    try:
+        transcribe = parse_stt_config(args.config)
+    except json.JSONDecodeError as e:
+        raise SystemExit(f"invalid --config JSON: {e}")
+    try:
+        samples = load_recordings(Path(args.corpus))
+    except (FileNotFoundError, OSError) as e:
+        raise SystemExit(str(e))
+    return asyncio.run(_async_seed_corpus(args, servers, samples, transcribe, probe_timeout))
+
+
 # --- info -------------------------------------------------------------------
 
 
 def _add_info_args(p: argparse.ArgumentParser) -> None:
     _add_servers(p, "Server(s) to query, as HOST or HOST:PORT (default port: 10700).")
-    p.add_argument(
-        "--timeout",
-        type=float,
-        default=5.0,
-        metavar="SEC",
-        help="Timeout in seconds for the describe exchange (default 5).",
-    )
+    _add_timeout(p, default=5.0, help="Timeout in seconds for the describe exchange (default 5).")
 
 
 async def _async_main_info(servers: list[tuple[str, int]], timeout: float) -> int:
@@ -740,7 +842,7 @@ def build_parser() -> argparse.ArgumentParser:
         description="Benchmark Wyoming-protocol TTS and STT servers " "(non-streaming and streaming).",
     )
     p.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
-    sub = p.add_subparsers(dest="task", required=True, metavar="{tts,stt,gen-corpus,info}")
+    sub = p.add_subparsers(dest="task", required=True, metavar="{tts,stt,generate-corpus,seed-corpus,info}")
 
     tts_p = sub.add_parser(
         "tts",
@@ -758,12 +860,20 @@ def build_parser() -> argparse.ArgumentParser:
     _add_stt_args(stt_p)
 
     gen_p = sub.add_parser(
-        "gen-corpus",
+        "generate-corpus",
         help="generate an STT test corpus from a TTS server",
         description="Synthesize text with a Wyoming TTS server and save paired "
         ".wav/.txt files to use with the stt subcommand.",
     )
     _add_gen_args(gen_p)
+
+    seed_p = sub.add_parser(
+        "seed-corpus",
+        help="seed an STT corpus by transcribing existing recordings",
+        description="Transcribe every .wav in a directory with a Wyoming STT server and write a "
+        ".txt next to each recording, for manual review before benchmarking with stt.",
+    )
+    _add_seed_args(seed_p)
 
     info_p = sub.add_parser(
         "info",
@@ -779,7 +889,13 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
-    handlers = {"tts": _main_tts, "stt": _main_stt, "gen-corpus": _main_gen_corpus, "info": _main_info}
+    handlers = {
+        "tts": _main_tts,
+        "stt": _main_stt,
+        "generate-corpus": _main_gen_corpus,
+        "seed-corpus": _main_seed_corpus,
+        "info": _main_info,
+    }
     try:
         return handlers[args.task](args)
     except KeyboardInterrupt:

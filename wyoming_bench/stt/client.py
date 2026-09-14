@@ -35,7 +35,7 @@ from wyoming.audio import AudioChunk, AudioStart, AudioStop
 from wyoming.client import AsyncTcpClient
 from wyoming.error import Error
 
-from ..const import MODE_STREAMING
+from ..const import MODE_NON_STREAMING, MODE_STREAMING
 from .accuracy import char_accuracy, word_accuracy
 from .corpus import AudioInput
 from .reporting import SttMeasurement
@@ -115,6 +115,42 @@ async def measure_stt_once(
         except Exception:  # noqa: BLE001
             pass
     return m
+
+
+async def transcribe_audio(
+    host: str,
+    port: int,
+    audio: AudioInput,
+    transcribe: Transcribe,
+    chunk_samples: int,
+    connect_timeout: float,
+    read_timeout: float,
+) -> str:
+    """Transcribe *audio* once and return the final transcript text.
+
+    Non-streaming path only (seeding does not need partial results). Opens a
+    fresh connection. Raises ``TranscriptionError`` (or ``TimeoutError``) on
+    failure rather than returning a partial result.
+    """
+    client = AsyncTcpClient(host, port, connect_timeout=connect_timeout, read_timeout=read_timeout)
+    try:
+        await client.connect()
+        m = SttMeasurement(
+            server=f"{host}:{port}",
+            mode=MODE_NON_STREAMING,
+            sample_id=audio.sample_id,
+            reference=audio.reference,
+            audio_duration_s=audio.duration_s,
+        )
+        await _run_non_streaming(client, m, audio, transcribe, chunk_samples)
+        if not m.hypothesis:
+            raise TranscriptionError("empty transcript")
+        return m.hypothesis
+    finally:
+        try:
+            await client.disconnect()
+        except Exception:  # noqa: BLE001
+            pass
 
 
 async def _send_audio(

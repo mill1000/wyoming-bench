@@ -18,7 +18,11 @@ from wyoming.error import Error
 from wyoming.event import async_read_event, async_write_event
 
 from wyoming_bench.const import MODE_NON_STREAMING, MODE_STREAMING
-from wyoming_bench.stt.client import measure_stt_once
+from wyoming_bench.stt.client import (
+    TranscriptionError,
+    measure_stt_once,
+    transcribe_audio,
+)
 from wyoming_bench.stt.corpus import AudioInput
 
 REFERENCE = "hello world"
@@ -152,6 +156,38 @@ class TestMeasureSttOnce(unittest.IsolatedAsyncioTestCase):
 
         expected_silence = int(round(0.5 * audio.rate * audio.width * audio.channels))
         self.assertEqual(captured["bytes"], len(audio.pcm) + expected_silence)
+
+
+class TestTranscribeAudio(unittest.IsolatedAsyncioTestCase):
+    """transcribe_audio (used by seed) returns the final text or raises."""
+
+    async def _run(self, reply):
+        server = await asyncio.start_server(lambda r, w: _mock_stt_handler(r, w, reply), "127.0.0.1", 0)
+        port = server.sockets[0].getsockname()[1]
+        try:
+            return await transcribe_audio("127.0.0.1", port, _make_audio(), Transcribe(), 512, 5.0, 5.0)
+        finally:
+            server.close()
+            await server.wait_closed()
+
+    async def test_returns_final_text(self):
+        self.assertEqual(await self._run([Transcript(text=REFERENCE).event()]), REFERENCE)
+
+    async def test_server_error_raises(self):
+        with self.assertRaises(TranscriptionError) as ctx:
+            await self._run([Error(text="boom").event()])
+        self.assertIn("boom", str(ctx.exception))
+
+    async def test_empty_transcript_raises(self):
+        with self.assertRaises(TranscriptionError) as ctx:
+            await self._run([Transcript(text="").event()])
+        self.assertIn("empty", str(ctx.exception))
+
+    async def test_unreachable_raises(self):
+        # Nothing listens on 127.0.0.1:1: the connection failure must propagate
+        # so the seed runner can report a per-sample failure.
+        with self.assertRaises(OSError):
+            await transcribe_audio("127.0.0.1", 1, _make_audio(), Transcribe(), 512, 1.0, 1.0)
 
 
 if __name__ == "__main__":

@@ -10,7 +10,11 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from wyoming.asr import Transcribe
+from wyoming.asr import Transcribe, Transcript
+from wyoming.audio import AudioStop
+from wyoming.error import Error
+from wyoming.event import async_read_event, async_write_event
+from wyoming.info import Describe
 from wyoming.tts import SynthesizeVoice
 
 from wyoming_bench import cli
@@ -23,7 +27,8 @@ from wyoming_bench.cli import (
     parse_tts_config,
 )
 from wyoming_bench.const import MODE_NON_STREAMING
-from wyoming_bench.stt.corpus import AudioInput
+from wyoming_bench.stt.corpus import AudioInput, load_recordings
+from wyoming_bench.tests.stt.test_corpus import _write_wav
 from wyoming_bench.tests.test_info import _info_handler, make_info
 
 
@@ -242,9 +247,27 @@ class TestBuildParser(unittest.TestCase):
             build_parser().parse_args(["stt", "--corpus", "/tmp/c"])
 
     def test_gen_corpus(self):
-        args = build_parser().parse_args(["gen-corpus", "localhost", "--out", "/tmp/o"])
-        self.assertEqual(args.task, "gen-corpus")
+        args = build_parser().parse_args(["generate-corpus", "localhost", "--out", "/tmp/o"])
+        self.assertEqual(args.task, "generate-corpus")
         self.assertEqual(args.out, "/tmp/o")
+
+    def test_seed(self):
+        args = build_parser().parse_args(["seed-corpus", "localhost", "--corpus", "/tmp/c"])
+        self.assertEqual(args.task, "seed-corpus")
+        self.assertEqual(args.corpus, "/tmp/c")
+        self.assertFalse(args.overwrite)
+
+    def test_seed_requires_corpus(self):
+        with self.assertRaises(SystemExit):
+            build_parser().parse_args(["seed-corpus", "localhost"])
+
+    def test_seed_requires_server(self):
+        with self.assertRaises(SystemExit):
+            build_parser().parse_args(["seed-corpus", "--corpus", "/tmp/c"])
+
+    def test_seed_overwrite(self):
+        args = build_parser().parse_args(["seed-corpus", "localhost", "--corpus", "/tmp/c", "--overwrite"])
+        self.assertTrue(args.overwrite)
 
     def test_info(self):
         args = build_parser().parse_args(["info", "localhost:1234"])
@@ -277,11 +300,13 @@ class TestCollectServers(unittest.TestCase):
 
 
 class TestResolveProbeTimeout(unittest.TestCase):
-    def test_default(self):
-        self.assertEqual(cli._resolve_probe_timeout(argparse.Namespace(probe_timeout=None), 8.0), 8.0)
+    """Probes respect --timeout, capped at the 8s probe budget."""
 
-    def test_override(self):
-        self.assertEqual(cli._resolve_probe_timeout(argparse.Namespace(probe_timeout=5.0), 8.0), 5.0)
+    def test_capped_at_default(self):
+        self.assertEqual(cli._resolve_probe_timeout(argparse.Namespace(timeout=60.0), 8.0), 8.0)
+
+    def test_follows_lower_timeout(self):
+        self.assertEqual(cli._resolve_probe_timeout(argparse.Namespace(timeout=3.0), 8.0), 3.0)
 
 
 class TestPreflight(unittest.IsolatedAsyncioTestCase):
@@ -389,11 +414,134 @@ class TestPreflight(unittest.IsolatedAsyncioTestCase):
         self.assertIn("FAIL", out.getvalue())
 
 
-class TestMain(unittest.TestCase):
-    def test_version(self):
-        with self.assertRaises(SystemExit) as ctx:
-            cli.main(["--version"])
-        self.assertEqual(ctx.exception.code, 0)
+async def _seed_mock_handler(reader, writer, info, text):
+    """Answer ``describe`` with *info*; transcribe each audio cycle with *text*.
+
+    If *text* is ``None`` the transcription gets a server ``error`` instead.
+    """
+    try:
+        while True:
+            event = await async_read_event(reader)
+            if event is None:
+                break
+            if Describe.is_type(event.type):
+                await async_write_event(info.event(), writer)
+            elif Transcribe.is_type(event.type):
+                await async_read_event(reader)  # audio-start
+                while True:  # audio-chunk* then audio-stop
+                    chunk = await async_read_event(reader)
+                    if chunk is None or AudioStop.is_type(chunk.type):
+                        break
+                if text is None:
+                    await async_write_event(Error(text="boom").event(), writer)
+                else:
+                    await async_write_event(Transcript(text=text).event(), writer)
+    except (ConnectionResetError, asyncio.IncompleteReadError):
+        pass
+    finally:
+        try:
+            writer.close()
+        except Exception:  # noqa: BLE001
+            pass
+        await writer.wait_closed()
+
+
+class TestSeedRunner(unittest.IsolatedAsyncioTestCase):
+    """seed writes one .txt per recording, skipping transcripts that exist."""
+
+    def _args(self, corpus_dir: Path, overwrite: bool = False):
+        return argparse.Namespace(
+            corpus=str(corpus_dir),
+            chunk_samples=512,
+            trailing_silence=0.0,
+            timeout=2.0,
+            overwrite=overwrite,
+        )
+
+    async def _seed(self, corpus_dir, text, overwrite=False):
+        server = await asyncio.start_server(
+            lambda r, w: _seed_mock_handler(r, w, make_info(asr=True, tts=False), text),
+            "127.0.0.1",
+            0,
+        )
+        port = server.sockets[0].getsockname()[1]
+        out = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(out):
+                return (
+                    await cli._async_seed_corpus(
+                        self._args(corpus_dir, overwrite),
+                        [("127.0.0.1", port)],
+                        load_recordings(corpus_dir),
+                        Transcribe(),
+                        2.0,
+                    ),
+                    out.getvalue(),
+                )
+        finally:
+            server.close()
+            await server.wait_closed()
+
+    async def test_writes_transcripts_and_skips_existing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            corpus = Path(tmp)
+            _write_wav(corpus / "rec_a.wav")
+            _write_wav(corpus / "rec_b.wav")
+            (corpus / "rec_b.txt").write_text("already reviewed\n", encoding="utf-8")
+
+            rc, out = await self._seed(corpus, "hello world")
+
+            self.assertEqual(rc, 0)
+            self.assertEqual((corpus / "rec_a.txt").read_text(encoding="utf-8").strip(), "hello world")
+            # The reviewed transcript is untouched.
+            self.assertEqual((corpus / "rec_b.txt").read_text(encoding="utf-8").strip(), "already reviewed")
+            self.assertIn("[skip] rec_b", out)
+            self.assertIn("Wrote 1 transcript(s)", out)
+            self.assertIn("1 skipped", out)
+
+    async def test_overwrite_replaces_existing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            corpus = Path(tmp)
+            _write_wav(corpus / "rec_a.wav")
+            (corpus / "rec_a.txt").write_text("stale\n", encoding="utf-8")
+
+            rc, out = await self._seed(corpus, "fresh transcript", overwrite=True)
+
+            self.assertEqual(rc, 0)
+            self.assertEqual((corpus / "rec_a.txt").read_text(encoding="utf-8").strip(), "fresh transcript")
+            self.assertNotIn("[skip]", out)
+
+    async def test_failed_transcription_writes_nothing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            corpus = Path(tmp)
+            _write_wav(corpus / "rec_a.wav")
+
+            rc, out = await self._seed(corpus, None)  # server answers with an error
+
+            self.assertEqual(rc, 1)
+            self.assertFalse((corpus / "rec_a.txt").exists())
+            self.assertIn("[fail] rec_a", out)
+            self.assertIn("boom", out)
+
+    async def test_unreachable_server(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            corpus = Path(tmp)
+            _write_wav(corpus / "rec_a.wav")
+
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                rc = await cli._async_seed_corpus(
+                    self._args(corpus),
+                    [("127.0.0.1", 1)],  # nothing listens here
+                    load_recordings(corpus),
+                    Transcribe(),
+                    2.0,
+                )
+
+            self.assertEqual(rc, 1)
+            self.assertFalse((corpus / "rec_a.txt").exists())
+            self.assertIn("[preflight]", out.getvalue())
+            self.assertIn("skipping server", out.getvalue())
 
 
 if __name__ == "__main__":

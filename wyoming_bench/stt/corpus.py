@@ -41,6 +41,14 @@ def _read_wav(path: Path) -> tuple[int, int, int, bytes]:
     return rate, width, channels, pcm
 
 
+def _list_wavs(directory: Path) -> list[Path]:
+    """All regular ``.wav`` files directly under *directory*, sorted by name."""
+    return sorted(
+        (p for p in directory.iterdir() if p.is_file() and p.suffix.lower() == ".wav"),
+        key=lambda p: p.name.lower(),
+    )
+
+
 def load_corpus(directory: Path | str) -> list[AudioInput]:
     """Load all ``.wav``/``.txt`` pairs under *directory*, sorted by sample id.
 
@@ -51,10 +59,7 @@ def load_corpus(directory: Path | str) -> list[AudioInput]:
     if not directory.is_dir():
         raise FileNotFoundError(f"corpus directory not found: {directory}")
 
-    wavs = sorted(
-        (p for p in directory.iterdir() if p.is_file() and p.suffix.lower() == ".wav"),
-        key=lambda p: p.name.lower(),
-    )
+    wavs = _list_wavs(directory)
     samples: list[AudioInput] = []
     for wav_path in wavs:
         txt_path = wav_path.with_suffix(".txt")
@@ -91,4 +96,43 @@ def load_corpus(directory: Path | str) -> list[AudioInput]:
     samples.sort(key=lambda s: s.sample_id)
     if not samples:
         raise FileNotFoundError(f"no .wav/.txt pairs found in {directory}")
+    return samples
+
+
+def load_recordings(directory: Path | str) -> list[AudioInput]:
+    """Load all ``.wav`` recordings under *directory*, paired or not.
+
+    Unlike :func:`load_corpus`, recordings **without** a ``.txt`` transcript
+    are included (with an empty reference): this is the input for the
+    ``seed`` command, which writes one transcript per recording. Files that
+    cannot be read as WAV are skipped with a warning.
+
+    Raises ``FileNotFoundError`` if the directory is missing or contains no
+    readable recordings.
+    """
+    directory = Path(directory)
+    if not directory.is_dir():
+        raise FileNotFoundError(f"corpus directory not found: {directory}")
+
+    samples: list[AudioInput] = []
+    for wav_path in _list_wavs(directory):
+        try:
+            rate, width, channels, pcm = _read_wav(wav_path)
+        except (wave.Error, EOFError) as e:
+            print(f"  [corpus] cannot read {wav_path.name}: {e}; skipping", flush=True)
+            continue
+        samples.append(
+            AudioInput(
+                sample_id=wav_path.stem,
+                reference="",
+                rate=rate,
+                width=width,
+                channels=channels,
+                pcm=pcm,
+                audio_path=wav_path,
+            )
+        )
+
+    if not samples:
+        raise FileNotFoundError(f"no .wav recordings found in {directory}")
     return samples
