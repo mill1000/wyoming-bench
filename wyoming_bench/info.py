@@ -1,7 +1,7 @@
 """Query the services a wyoming server advertises (``describe`` -> ``info``).
 
 Wyoming servers answer a ``describe`` event with an ``info`` event listing
-their ASR (STT), TTS, and other programs. That lets us (a) report what a
+their ASR, TTS, and other programs. That lets us (a) report what a
 server offers (the ``info`` subcommand) and (b) fail fast when a benchmark is
 pointed at a server that does not implement the requested service, instead of
 burning a per-event timeout on every round.
@@ -69,26 +69,40 @@ def available_services(info: Info) -> list[str]:
     return names
 
 
-def advertised_streaming(info: Info | None, service: str) -> bool | None:
+def _find_program(programs: list, name: str | None):
+    """The advertised program named *name*, or the first one when *name* is None.
+
+    Name matching is case-insensitive.
+    """
+    if name is None:
+        return programs[0] if programs else None
+    for p in programs:
+        if p.name.lower() == name.lower():
+            return p
+    return None
+
+
+def advertised_streaming(info: Info | None, service: str, program: str | None = None) -> bool | None:
     """Whether the server advertises streaming support for *service*.
 
-    *service* is ``"tts"`` or ``"asr"``. Without an explicit select-program
-    event the protocol uses the first program of each type, so the flag is
-    read off the first advertised program. Returns ``None`` when unknown (no
-    info, or no program for that service), in which case callers should fall
-    back to a behavioral probe.
+    *service* is ``"tts"`` or ``"asr"``. When *program* is given, the flag is
+    read off the advertised program with that name (``None`` when the name is
+    not advertised); without it the protocol uses the first program of each
+    type, so the flag is read off the first advertised program. Returns
+    ``None`` when unknown (no info, or no program for that service), in which
+    case callers should fall back to a behavioral probe.
     """
     if info is None:
         return None
     if service == "tts":
-        programs = info.tts
-        if not programs:
+        selected = _find_program(info.tts, program)
+        if selected is None:
             return None
-        return programs[0].supports_synthesize_streaming
-    programs = info.asr
-    if not programs:
+        return selected.supports_synthesize_streaming
+    selected = _find_program(info.asr, program)
+    if selected is None:
         return None
-    return programs[0].supports_transcript_streaming
+    return selected.supports_transcript_streaming
 
 
 def program_name(info: Info | None, service: str) -> str | None:
@@ -102,13 +116,14 @@ def program_name(info: Info | None, service: str) -> str | None:
     return programs[0].name if programs else None
 
 
-def server_label(host: str, port: int, info: Info | None, service: str) -> str:
+def server_label(host: str, port: int, info: Info | None, service: str, program: str | None = None) -> str:
     """Human-readable label for a benchmarked server.
 
-    ``host:port``, with the advertised program name appended in parentheses
-    when the info request provided one (e.g. ``10.0.0.1:10700 (piper)``).
+    ``host:port``, with the program name in parentheses: *program* when given,
+    else the first advertised program of *service* when the info request
+    provided one (e.g. ``10.0.0.1:10700 (piper)``).
     """
-    name = program_name(info, service)
+    name = program if program is not None else program_name(info, service)
     if name:
         return f"{host}:{port} ({name})"
     return f"{host}:{port}"

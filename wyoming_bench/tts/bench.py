@@ -40,6 +40,7 @@ async def _probe_streaming(
     connect_timeout: float,
     read_timeout: float,
     chunk_delay: float,
+    program: str | None = None,
     probe_timeout: float = STREAM_PROBE_TIMEOUT,
 ) -> bool:
     """Return True if *host:port* responds to a streaming synthesize.
@@ -48,7 +49,8 @@ async def _probe_streaming(
     (*probe_timeout*). A server that ignores synthesize-start/-chunk/-stop
     never emits audio, so the probe fails fast and we can bail on streaming
     mode for that server instead of paying the full read timeout once per
-    round.
+    round. When *program* is given, the probe (and the subsequent rounds) run
+    against that TTS program.
     """
     w = await measure_once(
         host,
@@ -60,6 +62,7 @@ async def _probe_streaming(
         min(connect_timeout, probe_timeout),
         min(read_timeout, probe_timeout),
         chunk_delay,
+        program,
     )
     return w.ok
 
@@ -80,22 +83,26 @@ async def bench_server(
     unique: bool = False,
     probe_timeout: float = STREAM_PROBE_TIMEOUT,
     info: Info | None = None,
+    program: str | None = None,
 ) -> list[Measurement]:
-    """Benchmark one server.
+    """Benchmark one server (or one TTS program of a server).
 
     Runs warmup (untimed) then ``rounds`` x ``texts`` per mode, sequentially.
-    Streaming mode is skipped immediately when the server's advertised info
-    says it is unsupported; otherwise it is probed first and skipped if no
-    audio is returned. When *unique* is set, each measurement gets a
-    nonce-suffixed copy of its text so repeated identical inputs do not hit a
-    server-side synthesis cache. A measurement that fails to connect means
-    the server is down/unreachable; the remaining runs (including other
-    modes) are skipped instead of each paying the connect timeout again.
+    When *program* is given, a ``select-program`` event selects that TTS
+    program for each measurement's connection, and the streaming-skip
+    decision uses that program's advertised flag. Streaming mode is skipped
+    immediately when the server's advertised info says it is unsupported;
+    otherwise it is probed first and skipped if no audio is returned. When
+    *unique* is set, each measurement gets a nonce-suffixed copy of its text
+    so repeated identical inputs do not hit a server-side synthesis cache. A
+    measurement that fails to connect means the server is down/unreachable;
+    the remaining runs (including other modes) are skipped instead of each
+    paying the connect timeout again.
     """
     measurements: list[Measurement] = []
     for mode in modes:
         if mode == MODE_STREAMING:
-            if advertised_streaming(info, "tts") is False:
+            if advertised_streaming(info, "tts", program) is False:
                 print(
                     f"  [streaming] NOT SUPPORTED by {host}:{port} "
                     f"(not advertised by server); skipping streaming mode",
@@ -112,6 +119,7 @@ async def bench_server(
                 connect_timeout,
                 read_timeout,
                 chunk_delay,
+                program,
                 probe_timeout,
             ):
                 print(
@@ -131,6 +139,7 @@ async def bench_server(
                 connect_timeout,
                 read_timeout,
                 chunk_delay,
+                program,
             )
             if w.connection_failed:
                 _report_unreachable(host, port, w.error)
@@ -150,6 +159,7 @@ async def bench_server(
                     connect_timeout,
                     read_timeout,
                     chunk_delay,
+                    program,
                 )
                 if m.connection_failed:
                     _report_unreachable(host, port, m.error)

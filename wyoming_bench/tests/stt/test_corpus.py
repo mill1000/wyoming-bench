@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import contextlib
+import io
 import tempfile
 import unittest
 import wave
@@ -31,7 +33,8 @@ class TestLoadCorpus(unittest.TestCase):
         pcm = _write_wav(self.dir / "data_01.wav")
         (self.dir / "data_01.txt").write_text("  hello world\n", encoding="utf-8")
 
-        samples = load_corpus(self.dir)
+        with contextlib.redirect_stdout(io.StringIO()):
+            samples = load_corpus(self.dir)
         self.assertEqual(len(samples), 1)
         s = samples[0]
         self.assertEqual(s.sample_id, "data_01")
@@ -46,7 +49,8 @@ class TestLoadCorpus(unittest.TestCase):
         pcm = _write_wav(self.dir / "good.wav")
         (self.dir / "good.txt").write_text("good one", encoding="utf-8")
 
-        samples = load_corpus(self.dir)
+        with contextlib.redirect_stdout(io.StringIO()):
+            samples = load_corpus(self.dir)
         self.assertEqual([s.sample_id for s in samples], ["good"])
         self.assertEqual(samples[0].pcm, pcm)
 
@@ -56,7 +60,8 @@ class TestLoadCorpus(unittest.TestCase):
         (self.dir / "a_1.txt").write_text("a", encoding="utf-8")
         (self.dir / "b_2.txt").write_text("b", encoding="utf-8")
 
-        samples = load_corpus(self.dir)
+        with contextlib.redirect_stdout(io.StringIO()):
+            samples = load_corpus(self.dir)
         self.assertEqual([s.sample_id for s in samples], ["a_1", "b_2"])
 
     def test_missing_directory(self):
@@ -65,7 +70,7 @@ class TestLoadCorpus(unittest.TestCase):
 
     def test_no_pairs(self):
         (self.dir / "orphan.txt").write_text("x", encoding="utf-8")
-        with self.assertRaises(FileNotFoundError):
+        with self.assertRaises(FileNotFoundError), contextlib.redirect_stdout(io.StringIO()):
             load_corpus(self.dir)
 
 
@@ -80,7 +85,8 @@ class TestLoadRecordings(unittest.TestCase):
     def test_loads_wavs_without_transcripts(self):
         pcm = _write_wav(self.dir / "rec_01.wav")
 
-        samples = load_recordings(self.dir)
+        with contextlib.redirect_stdout(io.StringIO()):
+            samples = load_recordings(self.dir)
         self.assertEqual(len(samples), 1)
         s = samples[0]
         self.assertEqual(s.sample_id, "rec_01")
@@ -94,14 +100,16 @@ class TestLoadRecordings(unittest.TestCase):
         _write_wav(self.dir / "rec_01.wav")
         (self.dir / "rec_01.txt").write_text("hello", encoding="utf-8")
 
-        samples = load_recordings(self.dir)
+        with contextlib.redirect_stdout(io.StringIO()):
+            samples = load_recordings(self.dir)
         self.assertEqual([s.sample_id for s in samples], ["rec_01"])
 
     def test_skips_unreadable_wav(self):
         (self.dir / "bad.wav").write_bytes(b"not a wav")
         pcm = _write_wav(self.dir / "good.wav")
 
-        samples = load_recordings(self.dir)
+        with contextlib.redirect_stdout(io.StringIO()):
+            samples = load_recordings(self.dir)
         self.assertEqual([s.sample_id for s in samples], ["good"])
         self.assertEqual(samples[0].pcm, pcm)
 
@@ -109,7 +117,8 @@ class TestLoadRecordings(unittest.TestCase):
         for name in ("b_2.wav", "a_1.wav"):
             _write_wav(self.dir / name)
 
-        samples = load_recordings(self.dir)
+        with contextlib.redirect_stdout(io.StringIO()):
+            samples = load_recordings(self.dir)
         self.assertEqual([s.sample_id for s in samples], ["a_1", "b_2"])
 
     def test_missing_directory(self):

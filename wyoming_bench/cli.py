@@ -8,18 +8,20 @@ import json
 import sys
 import wave
 from pathlib import Path
+from typing import Callable, NamedTuple
 
 from wyoming.asr import Transcribe
 from wyoming.info import Info
 from wyoming.tts import SynthesizeVoice
 
 from . import __version__
-from .const import MODE_NON_STREAMING, MODE_STREAMING
+from .const import MODE_NON_STREAMING, MODE_STREAMING, PROGRAM_ALL, PROGRAM_ANY
 from .info import (
     advertised_streaming,
     available_services,
     describe_services,
     fetch_info,
+    program_name,
     server_label,
 )
 from .stt.bench import STREAM_PROBE_TIMEOUT as STT_PROBE_TIMEOUT
@@ -58,11 +60,18 @@ def parse_server(spec: str) -> tuple[str, int]:
 # --- shared argument groups -------------------------------------------------
 
 
-def _add_servers(p: argparse.ArgumentParser, help_text: str) -> None:
+_BENCH_SERVERS_HELP = "Server(s) to benchmark, as HOST or HOST:PORT (default port: 10700)."
+
+
+def _add_servers(
+    p: argparse.ArgumentParser,
+    help_text: str,
+    server_type: Callable[[str], tuple] = parse_server,
+) -> None:
     p.add_argument(
         "servers",
         nargs="+",
-        type=parse_server,
+        type=server_type,
         metavar="SERVER",
         help=help_text,
     )
@@ -94,7 +103,7 @@ def _add_run_args(p: argparse.ArgumentParser) -> None:
 
 
 def _add_tts_args(p: argparse.ArgumentParser) -> None:
-    _add_servers(p, "Server(s) to benchmark, as HOST or HOST:PORT (default port: 10700).")
+    _add_servers(p, _BENCH_SERVERS_HELP)
     p.add_argument(
         "--mode",
         choices=["non_streaming", "streaming", "both"],
@@ -124,6 +133,16 @@ def _add_tts_args(p: argparse.ArgumentParser) -> None:
         default="{}",
         metavar="JSON",
         help='Voice/format JSON, e.g. \'{"voice":"name","text_format":"text"}\'.',
+    )
+    p.add_argument(
+        "--programs",
+        type=_parse_programs,
+        default=None,
+        metavar="NAMES",
+        help="Comma-separated TTS program names to benchmark, as listed by the `info` subcommand "
+        f"('{PROGRAM_ALL}' = every program the server advertises, '{PROGRAM_ANY}' = fall back to "
+        "the server's first program when no other requested name matches). A server that advertises "
+        "none of the requested programs is skipped with a warning. Default: the server's first program.",
     )
     p.add_argument(
         "--chunk-delay",
@@ -173,6 +192,76 @@ def load_texts(args: argparse.Namespace) -> list[str]:
     return list(DEFAULT_TEXTS)
 
 
+def _parse_programs(spec: str) -> list[str]:
+    """Parse a comma-separated ``--programs`` value into a program name list."""
+    names = [name.strip() for name in spec.split(",")]
+    if any(not name for name in names):
+        raise argparse.ArgumentTypeError(f"empty program name in {spec!r}")
+    return normalize_programs(names)
+
+
+def normalize_programs(requested: list[str] | None) -> list[str]:
+    """Validate and de-duplicate the requested program names (order kept)."""
+    seen: set[str] = set()
+    out: list[str] = []
+    for name in requested or []:
+        if name not in seen:
+            seen.add(name)
+            out.append(name)
+    if PROGRAM_ALL in out and len(out) > 1:
+        raise argparse.ArgumentTypeError(
+            f"--programs '{PROGRAM_ALL}' cannot be combined with other values"
+        )
+    return out
+
+
+def _programs_for_server(
+    requested: list[str],
+    info: Info | None,
+    service: str,
+) -> tuple[list[str | None], list[str]]:
+    """Resolve which programs of *service* (``"tts"`` or ``"asr"``) to benchmark.
+
+    *requested* is the normalized ``--programs`` list (empty for the default).
+    Returns ``(selected, missing)``: *selected* is one entry per benchmark
+    run — a program name to send via ``select-program``, or ``None`` for the
+    server default (no select-program event); *missing* holds requested names
+    the server does not advertise. The caller benchmarks *selected* and skips
+    the server with a warning only when *selected* is empty. ``"any"`` in the
+    request is a fallback, not a name: when none of the other names are
+    advertised, the server default is benchmarked instead of skipping.
+    """
+    if not requested:
+        return [None], []
+    if PROGRAM_ALL in requested:
+        if info is not None:
+            programs = info.tts if service == "tts" else info.asr
+            if programs:
+                return [p.name for p in programs], []
+        # No advertised program list (no info response): fall back to the
+        # server default, which is all that can be addressed anyway.
+        return [None], []
+    names = [n for n in requested if n != PROGRAM_ANY]
+    if not names:
+        # Only 'any' was requested: the server default, as with no --programs.
+        return [None], []
+    if info is None:
+        # Server does not advertise info: send the names anyway (best effort;
+        # pre-select-program servers ignore the event and use their default).
+        return list(names), []
+    advertised = [p.name for p in (info.tts if service == "tts" else info.asr)]
+    # Case-insensitive match: *matched* carries the server's canonical name so
+    # the select-program event uses exactly what the server advertises, while
+    # *missing* keeps the user's spelling for the warning.
+    canonical = {name.lower(): name for name in advertised}
+    matched = [canonical[n.lower()] for n in names if n.lower() in canonical]
+    missing = [n for n in names if n.lower() not in canonical]
+    if not matched and PROGRAM_ANY in requested:
+        # No named program matched: 'any' falls back to the server default.
+        return [None], missing
+    return matched, missing
+
+
 def parse_tts_config(raw: str) -> tuple[SynthesizeVoice | None, str | None]:
     cfg = json.loads(raw)
     if not isinstance(cfg, dict):
@@ -200,7 +289,7 @@ def parse_tts_config(raw: str) -> tuple[SynthesizeVoice | None, str | None]:
 
 
 def _add_stt_args(p: argparse.ArgumentParser) -> None:
-    _add_servers(p, "Server(s) to benchmark, as HOST or HOST:PORT (default port: 10700).")
+    _add_servers(p, _BENCH_SERVERS_HELP)
     p.add_argument(
         "--corpus",
         type=str,
@@ -222,6 +311,16 @@ def _add_stt_args(p: argparse.ArgumentParser) -> None:
         help='Transcribe JSON, e.g. \'{"name":"model","language":"en"}\'.',
     )
     p.add_argument(
+        "--programs",
+        type=_parse_programs,
+        default=None,
+        metavar="NAMES",
+        help="Comma-separated STT (ASR) program names to benchmark, as listed by the `info` subcommand "
+        f"('{PROGRAM_ALL}' = every program the server advertises, '{PROGRAM_ANY}' = fall back to "
+        "the server's first program when no other requested name matches). A server that advertises "
+        "none of the requested programs is skipped with a warning. Default: the server's first program.",
+    )
+    p.add_argument(
         "--chunk-samples",
         type=int,
         default=1024,
@@ -241,7 +340,7 @@ def _add_stt_args(p: argparse.ArgumentParser) -> None:
         default=0.5,
         metavar="SEC",
         help="Seconds of silence appended to each recording before transcription, "
-        "so streaming (online) ASR models can finalize their last words. RTF is "
+        "so streaming (online) STT models can finalize their last words. RTF is "
         "still computed on the original audio length. Use 0 to send recordings "
         "exactly as stored (default 0.5).",
     )
@@ -323,6 +422,13 @@ def _add_gen_args(p: argparse.ArgumentParser) -> None:
         help="Voice/format JSON (same as the tts subcommand).",
     )
     p.add_argument(
+        "--program",
+        default=None,
+        metavar="NAME",
+        help="TTS program name to synthesize with, as listed by the `info` subcommand "
+        "(default: the server's first program).",
+    )
+    p.add_argument(
         "--prefix",
         type=str,
         default="sample",
@@ -356,6 +462,13 @@ def _add_seed_args(p: argparse.ArgumentParser) -> None:
         help='Transcribe JSON, e.g. \'{"name":"model","language":"en"}\' (same as stt).',
     )
     p.add_argument(
+        "--program",
+        default=None,
+        metavar="NAME",
+        help="STT (ASR) program name to transcribe with, as listed by the `info` subcommand "
+        "(default: the server's first program).",
+    )
+    p.add_argument(
         "--chunk-samples",
         type=int,
         default=1024,
@@ -368,7 +481,7 @@ def _add_seed_args(p: argparse.ArgumentParser) -> None:
         default=0.5,
         metavar="SEC",
         help="Seconds of silence appended to each recording before transcription, "
-        "so streaming (online) ASR models can finalize their last words "
+        "so streaming (online) STT models can finalize their last words "
         "(default 0.5; use 0 to send recordings exactly as stored).",
     )
     p.add_argument(
@@ -439,6 +552,67 @@ async def _preflight_check(host: str, port: int, service: str, timeout: float) -
     return False, info
 
 
+class _ServerPlan(NamedTuple):
+    """A server's preflight result and the programs to benchmark on it."""
+
+    host: str
+    port: int
+    info: Info | None
+    proceed: bool
+    selected: list[str | None]
+    missing: list[str]
+
+
+def _program_label(info: Info | None, service: str, program: str | None) -> str:
+    """Display name for *program*: the name itself, or the server's first
+    advertised program for the default (``None``)."""
+    if program is not None:
+        return program
+    return program_name(info, service) or "default"
+
+
+def _print_probe_summary(plan: list[_ServerPlan], service: str) -> None:
+    """Print each server with the advertised capability of each program it offers.
+
+    One line per server, its programs indented beneath as ``<name> - <capability>``.
+    Advertised-only (no extra requests): a server's full advertised program list is
+    shown (not just the selected ones); a server that could not be reached is a single
+    ``unreachable`` line; ``unknown`` means the flag was not reported.
+    """
+    blocks: list[tuple[str, list[tuple[str, str]]]] = []
+    for p in plan:
+        hostport = f"{p.host}:{p.port}"
+        if not p.proceed and p.info is None:
+            # Down: the whole server is unreachable, so there are no programs to list.
+            blocks.append((f"{hostport} - unreachable", []))
+            continue
+        if p.info is None:
+            # Best effort: no describe response, so the advertised programs can't be
+            # enumerated; show only the requested ones, capability unknown.
+            progs = [(_program_label(None, service, program), "unknown") for program in p.selected]
+        else:
+            programs = p.info.tts if service == "tts" else p.info.asr
+            progs = [
+                (
+                    program.name,
+                    {True: "non-streaming, streaming", False: "non-streaming", None: "unknown"}[
+                        advertised_streaming(p.info, service, program.name)
+                    ],
+                )
+                for program in programs
+            ]
+        blocks.append((hostport, progs))
+    if not blocks:
+        return
+    print(flush=True)
+    print("capabilities (advertised):", flush=True)
+    for header, progs in blocks:
+        print(f"  {header}", flush=True)
+        width = max((len(name) for name, _ in progs), default=0)
+        for name, cap in progs:
+            print(f"    {name:<{width}} - {cap}", flush=True)
+
+
 # --- TTS runner -------------------------------------------------------------
 
 
@@ -450,6 +624,7 @@ async def _async_main_tts(
     voice: SynthesizeVoice | None,
     text_format: str | None,
     probe_timeout: float,
+    programs: list[str],
 ) -> int:
     print(f"wyoming-bench {__version__} (tts)", flush=True)
     print(f"servers: {[f'{h}:{p}' for h, p in servers]}", flush=True)
@@ -457,40 +632,60 @@ async def _async_main_tts(
     print(f"rounds:  {args.rounds}  warmup: {args.warmup}", flush=True)
     print(f"probe:   {probe_timeout:g}s  unique: {args.unique}", flush=True)
     print(f"texts:   {len(texts)} sample(s)", flush=True)
+    if programs:
+        print(f"programs: {programs}", flush=True)
     if voice is not None:
         print(f"voice:   {voice.name}", flush=True)
     if text_format is not None:
         print(f"format:  {text_format}", flush=True)
 
+    plan: list[_ServerPlan] = []
+    for host, port in servers:
+        proceed, info = await _preflight_check(host, port, "tts", probe_timeout)
+        selected, missing = _programs_for_server(programs, info, "tts")
+        plan.append(_ServerPlan(host, port, info, proceed, selected, missing))
+
+    _print_probe_summary(plan, "tts")
+
     by_server: dict[str, list[Measurement]] = {}
     labels: list[str] = []
-    for host, port in servers:
+    for p in plan:
         print(flush=True)
-        proceed, info = await _preflight_check(host, port, "tts", probe_timeout)
-        label = server_label(host, port, info, "tts")
-        print(f"=== {label} ===", flush=True)
-        labels.append(label)
-        if not proceed:
+        if not p.proceed:
+            label = server_label(p.host, p.port, p.info, "tts")
+            print(f"=== {label} ===", flush=True)
+            labels.append(label)
             continue
-        ms = await bench_server(
-            host,
-            port,
-            texts,
-            modes,
-            voice,
-            text_format,
-            args.rounds,
-            args.warmup,
-            args.verbose,
-            args.chunk_delay,
-            args.timeout,
-            args.timeout,
-            args.unique,
-            probe_timeout,
-            info,
-        )
-        by_server[label] = ms
-        print_server_report(label, ms)
+        if not p.selected:
+            label = server_label(p.host, p.port, p.info, "tts")
+            print(f"=== {label} ===", flush=True)
+            labels.append(label)
+            print(f"  [programs] skipping: {', '.join(p.missing)} not advertised", flush=True)
+            continue
+        for program in p.selected:
+            label = server_label(p.host, p.port, p.info, "tts", program)
+            print(f"=== {label} ===", flush=True)
+            labels.append(label)
+            ms = await bench_server(
+                p.host,
+                p.port,
+                texts,
+                modes,
+                voice,
+                text_format,
+                args.rounds,
+                args.warmup,
+                args.verbose,
+                args.chunk_delay,
+                args.timeout,
+                args.timeout,
+                args.unique,
+                probe_timeout,
+                p.info,
+                program,
+            )
+            by_server[label] = ms
+            print_server_report(label, ms)
 
     print_summary(labels, by_server)
 
@@ -526,7 +721,11 @@ def _main_tts(args: argparse.Namespace) -> int:
     else:
         modes = [_MODE_BY_FLAG[args.mode]]
 
-    return asyncio.run(_async_main_tts(args, servers, texts, modes, voice, text_format, probe_timeout))
+    programs = args.programs or []
+
+    return asyncio.run(
+        _async_main_tts(args, servers, texts, modes, voice, text_format, probe_timeout, programs)
+    )
 
 
 # --- STT runner -------------------------------------------------------------
@@ -539,6 +738,7 @@ async def _async_main_stt(
     modes: list[str],
     transcribe: Transcribe,
     probe_timeout: float,
+    programs: list[str],
 ) -> int:
     print(f"wyoming-bench {__version__} (stt)", flush=True)
     print(f"servers: {[f'{h}:{p}' for h, p in servers]}", flush=True)
@@ -551,40 +751,60 @@ async def _async_main_stt(
     )
     total_audio = sum(s.duration_s for s in samples)
     print(f"corpus:  {len(samples)} sample(s), {total_audio:.1f}s audio", flush=True)
+    if programs:
+        print(f"programs: {programs}", flush=True)
     if transcribe.name is not None:
         print(f"model:   {transcribe.name}", flush=True)
     if transcribe.language is not None:
         print(f"language: {transcribe.language}", flush=True)
 
+    plan: list[_ServerPlan] = []
+    for host, port in servers:
+        proceed, info = await _preflight_check(host, port, "asr", probe_timeout)
+        selected, missing = _programs_for_server(programs, info, "asr")
+        plan.append(_ServerPlan(host, port, info, proceed, selected, missing))
+
+    _print_probe_summary(plan, "asr")
+
     by_server: dict[str, list[SttMeasurement]] = {}
     labels: list[str] = []
-    for host, port in servers:
+    for p in plan:
         print(flush=True)
-        proceed, info = await _preflight_check(host, port, "asr", probe_timeout)
-        label = server_label(host, port, info, "asr")
-        print(f"=== {label} ===", flush=True)
-        labels.append(label)
-        if not proceed:
+        if not p.proceed:
+            label = server_label(p.host, p.port, p.info, "asr")
+            print(f"=== {label} ===", flush=True)
+            labels.append(label)
             continue
-        ms = await bench_stt_server(
-            host,
-            port,
-            samples,
-            modes,
-            transcribe,
-            args.rounds,
-            args.warmup,
-            args.verbose,
-            args.chunk_samples,
-            args.chunk_delay,
-            args.timeout,
-            args.timeout,
-            probe_timeout,
-            info,
-            args.trailing_silence,
-        )
-        by_server[label] = ms
-        print_stt_server_report(label, ms)
+        if not p.selected:
+            label = server_label(p.host, p.port, p.info, "asr")
+            print(f"=== {label} ===", flush=True)
+            labels.append(label)
+            print(f"  [programs] skipping: {', '.join(p.missing)} not advertised", flush=True)
+            continue
+        for program in p.selected:
+            label = server_label(p.host, p.port, p.info, "asr", program)
+            print(f"=== {label} ===", flush=True)
+            labels.append(label)
+            ms = await bench_stt_server(
+                p.host,
+                p.port,
+                samples,
+                modes,
+                transcribe,
+                args.rounds,
+                args.warmup,
+                args.verbose,
+                args.chunk_samples,
+                args.chunk_delay,
+                args.timeout,
+                args.timeout,
+                probe_timeout,
+                p.info,
+                args.trailing_silence,
+                program,
+            )
+            by_server[label] = ms
+            print_stt_server_report(label, ms)
 
     print_stt_summary(labels, by_server)
 
@@ -625,7 +845,11 @@ def _main_stt(args: argparse.Namespace) -> int:
     else:
         modes = [_MODE_BY_FLAG[args.mode]]
 
-    return asyncio.run(_async_main_stt(args, servers, samples, modes, transcribe, probe_timeout))
+    programs = args.programs or []
+
+    return asyncio.run(
+        _async_main_stt(args, servers, samples, modes, transcribe, probe_timeout, programs)
+    )
 
 
 # --- gen-corpus runner ------------------------------------------------------
@@ -639,6 +863,7 @@ async def _async_gen_corpus(
     voice: SynthesizeVoice | None,
     text_format: str | None,
     probe_timeout: float,
+    program: str | None = None,
 ) -> int:
     host, port = servers[0]
     print(f"wyoming-bench {__version__} (generate-corpus)", flush=True)
@@ -650,7 +875,11 @@ async def _async_gen_corpus(
     proceed, info = await _preflight_check(host, port, "tts", probe_timeout)
     if not proceed:
         return 1
-    if mode == MODE_STREAMING and advertised_streaming(info, "tts") is False:
+    if program is not None and info is not None and not any(p.name == program for p in info.tts):
+        advertised = ", ".join(p.name for p in info.tts) or "none"
+        print(f"  [preflight] {host}:{port} does not advertise TTS program {program!r} (has: {advertised})", flush=True)
+        return 1
+    if mode == MODE_STREAMING and advertised_streaming(info, "tts", program) is False:
         print(
             "  [preflight] server does not advertise synthesize streaming; " "use --mode non_streaming",
             flush=True,
@@ -674,6 +903,7 @@ async def _async_gen_corpus(
                 text_format,
                 args.timeout,
                 args.timeout,
+                program,
             )
         except asyncio.TimeoutError:
             print(f"  [fail] {stem}: timed out (>{args.timeout:.0f}s per event)", flush=True)
@@ -712,7 +942,9 @@ def _main_gen_corpus(args: argparse.Namespace) -> int:
     if not texts:
         raise SystemExit("no texts to synthesize")
     mode = _MODE_BY_FLAG[args.mode]
-    return asyncio.run(_async_gen_corpus(args, servers, texts, mode, voice, text_format, probe_timeout))
+    return asyncio.run(
+        _async_gen_corpus(args, servers, texts, mode, voice, text_format, probe_timeout, args.program)
+    )
 
 
 # --- seed runner ------------------------------------------------------------
@@ -724,6 +956,7 @@ async def _async_seed_corpus(
     samples: list[AudioInput],
     transcribe: Transcribe,
     probe_timeout: float,
+    program: str | None = None,
 ) -> int:
     host, port = servers[0]
     print(f"wyoming-bench {__version__} (seed-corpus)", flush=True)
@@ -731,13 +964,19 @@ async def _async_seed_corpus(
     print(f"corpus:   {args.corpus}", flush=True)
     total_audio = sum(s.duration_s for s in samples)
     print(f"recordings: {len(samples)} sample(s), {total_audio:.1f}s audio", flush=True)
+    if program is not None:
+        print(f"program: {program}", flush=True)
     if transcribe.name is not None:
         print(f"model:   {transcribe.name}", flush=True)
     if transcribe.language is not None:
         print(f"language: {transcribe.language}", flush=True)
 
-    proceed, _ = await _preflight_check(host, port, "asr", probe_timeout)
+    proceed, info = await _preflight_check(host, port, "asr", probe_timeout)
     if not proceed:
+        return 1
+    if program is not None and info is not None and not any(p.name == program for p in info.asr):
+        advertised = ", ".join(p.name for p in info.asr) or "none"
+        print(f"  [preflight] {host}:{port} does not advertise STT (ASR) program {program!r} (has: {advertised})", flush=True)
         return 1
 
     n_ok = n_skip = n_fail = 0
@@ -756,6 +995,7 @@ async def _async_seed_corpus(
                 args.chunk_samples,
                 args.timeout,
                 args.timeout,
+                program,
             )
         except asyncio.TimeoutError:
             print(f"  [fail] {sample.sample_id}: timed out (>{args.timeout:.0f}s per event)", flush=True)
@@ -795,7 +1035,9 @@ def _main_seed_corpus(args: argparse.Namespace) -> int:
         samples = load_recordings(Path(args.corpus))
     except (FileNotFoundError, OSError) as e:
         raise SystemExit(str(e))
-    return asyncio.run(_async_seed_corpus(args, servers, samples, transcribe, probe_timeout))
+    return asyncio.run(
+        _async_seed_corpus(args, servers, samples, transcribe, probe_timeout, args.program)
+    )
 
 
 # --- info -------------------------------------------------------------------
@@ -853,7 +1095,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     stt_p = sub.add_parser(
         "stt",
-        help="benchmark speech-to-text (ASR) servers",
+        help="benchmark speech-to-text servers",
         description="Benchmark Wyoming STT servers (non-streaming and streaming) "
         "for speed and word-level accuracy.",
     )
@@ -879,7 +1121,7 @@ def build_parser() -> argparse.ArgumentParser:
         "info",
         help="show the services a server advertises (describe/info)",
         description="Connect to a Wyoming server and print the services it advertises "
-        "(ASR/STT and TTS programs, models/voices, streaming support).",
+        "(STT/ASR and TTS programs, models/voices, streaming support).",
     )
     _add_info_args(info_p)
 

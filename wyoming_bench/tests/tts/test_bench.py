@@ -13,7 +13,7 @@ import unittest
 from unittest.mock import patch
 
 from wyoming_bench.const import MODE_NON_STREAMING, MODE_STREAMING
-from wyoming_bench.tests.test_info import make_info
+from wyoming_bench.tests.test_info import make_info, make_info_two_tts
 from wyoming_bench.tts.bench import bench_server
 from wyoming_bench.tts.reporting import Measurement
 
@@ -65,6 +65,85 @@ class TestBenchServerStreamingSkip(unittest.IsolatedAsyncioTestCase):
         ms, out = await _run(None)
         self.assertEqual(ms, [])
         self.assertIn("no audio in response", out)
+
+
+class TestBenchServerProgram(unittest.IsolatedAsyncioTestCase):
+    async def test_program_forwarded_to_measure_once(self):
+        calls: list[str | None] = []
+
+        async def fake_measure_once(*args, **kwargs):
+            calls.append(kwargs.get("program", args[9] if len(args) > 9 else None))
+            return Measurement(server="127.0.0.1:1", mode=args[2], text=args[3])
+
+        with patch("wyoming_bench.tts.bench.measure_once", side_effect=fake_measure_once):
+            with contextlib.redirect_stdout(io.StringIO()):
+                await bench_server(
+                    "127.0.0.1",
+                    1,
+                    ["a"],
+                    [MODE_NON_STREAMING],
+                    None,
+                    None,
+                    1,
+                    0,
+                    False,
+                    0.0,
+                    1.0,
+                    1.0,
+                    False,
+                    1.0,
+                    None,
+                    program="piper",
+                )
+        self.assertTrue(calls)
+        self.assertTrue(all(p == "piper" for p in calls))
+
+    async def test_streaming_skip_uses_selected_program_flag(self):
+        # tts-prog (the first program) advertises no streaming, but kokoro
+        # does: the skip decision must follow the selected program, not the
+        # first advertised one.
+        info = make_info_two_tts()
+        calls: list[str | None] = []
+
+        async def fake_measure_once(*args, **kwargs):
+            calls.append(kwargs.get("program", args[9] if len(args) > 9 else None))
+            return Measurement(server="127.0.0.1:1", mode=args[2], text=args[3])
+
+        kwargs = dict(
+            host="127.0.0.1",
+            port=1,
+            texts=["a"],
+            modes=[MODE_STREAMING],
+            voice=None,
+            text_format=None,
+            rounds=1,
+            warmup=0,
+            verbose=False,
+            chunk_delay=0.0,
+            connect_timeout=1.0,
+            read_timeout=1.0,
+            unique=False,
+            probe_timeout=1.0,
+            info=info,
+        )
+        with patch("wyoming_bench.tts.bench.measure_once", side_effect=fake_measure_once):
+            with contextlib.redirect_stdout(io.StringIO()) as out:
+                ms = await bench_server(**kwargs, program="kokoro")
+        # kokoro advertises streaming, so the probe runs (and fails against the
+        # fake: no audio) instead of skipping as "not advertised".
+        self.assertEqual(ms, [])
+        self.assertEqual(calls, ["kokoro"])
+        self.assertNotIn("not advertised by server", out.getvalue())
+        self.assertIn("no audio in response", out.getvalue())
+
+        calls.clear()
+        with patch("wyoming_bench.tts.bench.measure_once", side_effect=fake_measure_once):
+            with contextlib.redirect_stdout(io.StringIO()) as out:
+                ms = await bench_server(**kwargs, program="tts-prog")
+        # tts-prog advertises no streaming: skipped immediately, no probe.
+        self.assertEqual(ms, [])
+        self.assertEqual(calls, [])
+        self.assertIn("not advertised by server", out.getvalue())
 
 
 class TestBenchServerUnreachable(unittest.IsolatedAsyncioTestCase):

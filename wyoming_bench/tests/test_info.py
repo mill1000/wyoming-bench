@@ -77,6 +77,41 @@ def make_info(asr: bool = True, tts: bool = True) -> Info:
     return Info(asr=asr_programs, tts=tts_programs)
 
 
+def make_info_two_tts() -> Info:
+    """Info with two TTS programs that differ in streaming support."""
+    info = make_info()  # first program: tts-prog, no streaming
+    info.tts.append(
+        TtsProgram(
+            name="kokoro",
+            attribution=_ATTR,
+            installed=True,
+            description="TTS",
+            version="1.0",
+            voices=[],
+            supports_synthesize_streaming=True,
+        )
+    )
+    return info
+
+
+def make_info_two_asr() -> Info:
+    """Info with two ASR programs that differ in streaming support."""
+    info = make_info()
+    info.asr[0].supports_transcript_streaming = False  # first program: asr-prog, no streaming
+    info.asr.append(
+        AsrProgram(
+            name="whisper",
+            attribution=_ATTR,
+            installed=True,
+            description="ASR",
+            version="1.0",
+            models=[],
+            supports_transcript_streaming=True,
+        )
+    )
+    return info
+
+
 async def _info_handler(reader, writer, info: Info):
     """Answer ``describe`` with *info*; stay connected until the client leaves."""
     try:
@@ -124,6 +159,7 @@ class TestFetchInfo(unittest.IsolatedAsyncioTestCase):
             yield port
         finally:
             server.close()
+            server.close_clients()  # don't wait on handlers that never close the connection
             await server.wait_closed()
 
     async def test_returns_advertised_services(self):
@@ -186,6 +222,25 @@ class TestAdvertisedStreaming(unittest.TestCase):
         self.assertIsNone(advertised_streaming(None, "tts"))
         self.assertIsNone(advertised_streaming(None, "asr"))
 
+    def test_named_program_reads_its_own_flag(self):
+        info = make_info_two_tts()
+        self.assertIs(advertised_streaming(info, "tts", "tts-prog"), False)
+        self.assertIs(advertised_streaming(info, "tts", "kokoro"), True)
+
+    def test_asr_named_program_reads_its_own_flag(self):
+        info = make_info_two_asr()
+        self.assertIs(advertised_streaming(info, "asr", "asr-prog"), False)
+        self.assertIs(advertised_streaming(info, "asr", "whisper"), True)
+
+    def test_named_program_match_is_case_insensitive(self):
+        info = make_info_two_tts()
+        self.assertIs(advertised_streaming(info, "tts", "Kokoro"), True)
+        self.assertIs(advertised_streaming(info, "tts", "TTS-PROG"), False)
+
+    def test_unknown_program_name_returns_none(self):
+        self.assertIsNone(advertised_streaming(make_info_two_tts(), "tts", "nope"))
+        self.assertIsNone(advertised_streaming(make_info_two_asr(), "asr", "nope"))
+
 
 class TestProgramName(unittest.TestCase):
     def test_returns_first_program_name(self):
@@ -215,6 +270,12 @@ class TestServerLabel(unittest.TestCase):
 
     def test_label_without_program_is_bare(self):
         self.assertEqual(server_label("10.0.0.1", 10700, make_info(tts=False), "tts"), "10.0.0.1:10700")
+
+    def test_label_uses_explicit_program(self):
+        self.assertEqual(
+            server_label("10.0.0.1", 10700, make_info_two_tts(), "tts", "kokoro"),
+            "10.0.0.1:10700 (kokoro)",
+        )
 
 
 class TestDescribeServices(unittest.TestCase):
