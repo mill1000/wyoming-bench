@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import statistics
 from dataclasses import dataclass
 
 from ..reporting import (
@@ -77,7 +78,44 @@ def summarize_mode(measurements: list[Measurement], mode: str) -> dict:
     }
 
 
+def normalized_rtfs(rows: list[tuple[str, dict]]) -> dict[str, float]:
+    """Cross-server RTF for fair comparison, keyed by server name.
+
+    *rows* is a list of ``(server, summary)`` pairs as produced by
+    :func:`summarize_mode`. Each server's mean total time is divided by the
+    mean audio duration across all servers (equal weight per server). Because
+    the denominator is shared, the ratio between two servers reduces to the
+    ratio of their wall times, so servers that speak the same text at
+    different rates are compared fairly. The per-server RTF (against real
+    time) remains available in the individual server reports.
+    """
+    audio_means = [
+        s["audio_duration"]["mean"]
+        for _, s in rows
+        if s["ok"] > 0 and s["audio_duration"]["mean"] is not None
+    ]
+    if not audio_means:
+        return {}
+    mean_audio = statistics.fmean(audio_means)
+    return {
+        server: s["total"]["mean"] / mean_audio
+        for server, s in rows
+        if s["ok"] > 0 and s["total"]["mean"] is not None
+    }
+
+
 # --- plain-text rendering ---------------------------------------------------
+
+
+# Explains the summary's cross-server RTF so readers do not confuse it with
+# the per-server RTF (total time vs. that server's own audio duration).
+SUMMARY_RTF_NOTE = (
+    "Note: RTF_norm divides each server's mean total time by the mean audio "
+    "duration across all servers, so servers that speak the same text at "
+    "different rates are compared fairly. The per-server RTF (total time vs. "
+    "its own audio duration; < 1 means faster than real time) is in the "
+    "server reports above."
+)
 
 
 def print_server_report(server: str, measurements: list[Measurement]) -> None:
@@ -125,6 +163,7 @@ def print_summary(servers: list[str], by_server: dict[str, list[Measurement]]) -
     print("=" * 78)
     print("Summary (lower is better)")
     print("=" * 78)
+    print(SUMMARY_RTF_NOTE)
     for mode in modes:
         rows = [(server, summarize_mode(by_server.get(server, []), mode)) for server in servers]
         rows.sort(
@@ -133,11 +172,12 @@ def print_summary(servers: list[str], by_server: dict[str, list[Measurement]]) -
                 item[1]["ttft"]["mean"] if item[1]["ttft"]["mean"] is not None else 0.0,
             )
         )
+        norm = normalized_rtfs(rows)
         print()
         print(f"[{mode}]")
         print(
             f"  {'server':<{SERVER_COL_WIDTH}}{'ok':>4}{'TTFT_mean':>12}{'TTFT_p95':>12}"
-            f"{'Total_mean':>12}{'RTF_mean':>10}{'audio_dur':>12}"
+            f"{'Total_mean':>12}{'RTF_norm':>10}{'audio_dur':>12}"
         )
         for server, s in rows:
             print(
@@ -145,6 +185,6 @@ def print_summary(servers: list[str], by_server: dict[str, list[Measurement]]) -
                 f"{_fmt_ms_cell(s['ttft']['mean']):>12}"
                 f"{_fmt_ms_cell(s['ttft']['p95']):>12}"
                 f"{_fmt_ms_cell(s['total']['mean']):>12}"
-                f"{_fmt_cell(s['rtf']['mean']):>10}"
+                f"{_fmt_cell(norm.get(server)):>10}"
                 f"{_fmt_cell(s['audio_duration']['mean']):>11}s"
             )
