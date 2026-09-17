@@ -233,7 +233,17 @@ class TestMeasureSttOnceProgram(unittest.IsolatedAsyncioTestCase):
 
     async def _run(self, port, program=None):
         return await measure_stt_once(
-            "127.0.0.1", port, MODE_NON_STREAMING, _make_audio(), Transcribe(), 512, 5.0, 5.0, 0.0, 0.0, program
+            "127.0.0.1",
+            port,
+            MODE_NON_STREAMING,
+            _make_audio(),
+            Transcribe(),
+            512,
+            5.0,
+            5.0,
+            0.0,
+            0.0,
+            program,
         )
 
     async def test_program_sent_before_transcribe(self):

@@ -159,7 +159,10 @@ class TestFetchInfo(unittest.IsolatedAsyncioTestCase):
             yield port
         finally:
             server.close()
-            server.close_clients()  # don't wait on handlers that never close the connection
+            # close_clients() only exists on 3.12+; on earlier versions rely on the
+            # client-side disconnect to let the handler close its own connection.
+            if hasattr(server, "close_clients"):
+                server.close_clients()  # don't wait on handlers that never close the connection
             await server.wait_closed()
 
     async def test_returns_advertised_services(self):

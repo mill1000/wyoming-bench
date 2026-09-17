@@ -29,7 +29,12 @@ from wyoming_bench.cli import (
 from wyoming_bench.const import MODE_NON_STREAMING, PROGRAM_ALL, PROGRAM_ANY
 from wyoming_bench.stt.corpus import AudioInput, load_recordings
 from wyoming_bench.tests.stt.test_corpus import _write_wav
-from wyoming_bench.tests.test_info import _info_handler, make_info, make_info_two_asr, make_info_two_tts
+from wyoming_bench.tests.test_info import (
+    _info_handler,
+    make_info,
+    make_info_two_asr,
+    make_info_two_tts,
+)
 
 
 def _fake_sample() -> AudioInput:
@@ -335,7 +340,9 @@ class TestBuildParser(unittest.TestCase):
         self.assertEqual(args.programs, [PROGRAM_ANY])
 
     def test_seed_program(self):
-        args = build_parser().parse_args(["seed-corpus", "localhost", "--corpus", "./c", "--program", "whisper"])
+        args = build_parser().parse_args(
+            ["seed-corpus", "localhost", "--corpus", "./c", "--program", "whisper"]
+        )
         self.assertEqual(args.program, "whisper")
 
     def test_stt_requires_corpus(self):
@@ -451,7 +458,9 @@ class TestProgramsForServer(unittest.TestCase):
         self.assertEqual(missing, [])
 
     def test_named_programs_filtered_by_advertised(self):
-        selected, missing = cli._programs_for_server(["kokoro", "nope", "tts-prog"], make_info_two_tts(), "tts")
+        selected, missing = cli._programs_for_server(
+            ["kokoro", "nope", "tts-prog"], make_info_two_tts(), "tts"
+        )
         self.assertEqual(selected, ["kokoro", "tts-prog"])
         self.assertEqual(missing, ["nope"])
 
@@ -483,7 +492,9 @@ class TestProgramsForServer(unittest.TestCase):
         self.assertEqual(missing, ["nope"])
 
     def test_match_is_case_insensitive_and_returns_canonical_name(self):
-        selected, missing = cli._programs_for_server(["Kokoro", "TTS-PROG", "Nope"], make_info_two_tts(), "tts")
+        selected, missing = cli._programs_for_server(
+            ["Kokoro", "TTS-PROG", "Nope"], make_info_two_tts(), "tts"
+        )
         self.assertEqual(selected, ["kokoro", "tts-prog"])
         self.assertEqual(missing, ["Nope"])
 

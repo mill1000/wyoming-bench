@@ -209,9 +209,7 @@ def normalize_programs(requested: list[str] | None) -> list[str]:
             seen.add(name)
             out.append(name)
     if PROGRAM_ALL in out and len(out) > 1:
-        raise argparse.ArgumentTypeError(
-            f"--programs '{PROGRAM_ALL}' cannot be combined with other values"
-        )
+        raise argparse.ArgumentTypeError(f"--programs '{PROGRAM_ALL}' cannot be combined with other values")
     return out
 
 
@@ -847,9 +845,7 @@ def _main_stt(args: argparse.Namespace) -> int:
 
     programs = args.programs or []
 
-    return asyncio.run(
-        _async_main_stt(args, servers, samples, modes, transcribe, probe_timeout, programs)
-    )
+    return asyncio.run(_async_main_stt(args, servers, samples, modes, transcribe, probe_timeout, programs))
 
 
 # --- gen-corpus runner ------------------------------------------------------
@@ -877,7 +873,10 @@ async def _async_gen_corpus(
         return 1
     if program is not None and info is not None and not any(p.name == program for p in info.tts):
         advertised = ", ".join(p.name for p in info.tts) or "none"
-        print(f"  [preflight] {host}:{port} does not advertise TTS program {program!r} (has: {advertised})", flush=True)
+        print(
+            f"  [preflight] {host}:{port} does not advertise TTS program {program!r} (has: {advertised})",
+            flush=True,
+        )
         return 1
     if mode == MODE_STREAMING and advertised_streaming(info, "tts", program) is False:
         print(
@@ -976,7 +975,10 @@ async def _async_seed_corpus(
         return 1
     if program is not None and info is not None and not any(p.name == program for p in info.asr):
         advertised = ", ".join(p.name for p in info.asr) or "none"
-        print(f"  [preflight] {host}:{port} does not advertise STT (ASR) program {program!r} (has: {advertised})", flush=True)
+        print(
+            f"  [preflight] {host}:{port} does not advertise STT (ASR) program {program!r} (has: {advertised})",
+            flush=True,
+        )
         return 1
 
     n_ok = n_skip = n_fail = 0
@@ -1035,9 +1037,7 @@ def _main_seed_corpus(args: argparse.Namespace) -> int:
         samples = load_recordings(Path(args.corpus))
     except (FileNotFoundError, OSError) as e:
         raise SystemExit(str(e))
-    return asyncio.run(
-        _async_seed_corpus(args, servers, samples, transcribe, probe_timeout, args.program)
-    )
+    return asyncio.run(_async_seed_corpus(args, servers, samples, transcribe, probe_timeout, args.program))
 
 
 # --- info -------------------------------------------------------------------

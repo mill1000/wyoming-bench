@@ -119,7 +119,9 @@ class TestMeasureOnceProgram(unittest.IsolatedAsyncioTestCase):
     async def test_program_sent_before_synthesize(self):
         events: list[str] = []
         async for port in self._with_server(_mock_tts_handler_recording, events):
-            m = await measure_once("127.0.0.1", port, MODE_NON_STREAMING, "hi", None, None, 5.0, 5.0, 0.0, "piper")
+            m = await measure_once(
+                "127.0.0.1", port, MODE_NON_STREAMING, "hi", None, None, 5.0, 5.0, 0.0, "piper"
+            )
         self.assertTrue(m.ok, m.error)
         self.assertEqual(events, ["select-program", "synthesize"])
 
