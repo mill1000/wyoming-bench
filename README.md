@@ -56,7 +56,7 @@ Metrics, per mode, aggregated across rounds as min / mean / median / p95 / max:
 | --- | --- |
 | TTFT | Time to first audio byte (from when the request is sent). |
 | Total | Wall time until all audio has been received. |
-| RTF | Total time divided by the duration of the returned audio. `< 1` means faster than real time (lower is better). The summary also reports `RTF_norm`, which divides each server's total time by the mean audio duration across servers, so servers speaking the same text at different rates are compared fairly. |
+| RTF | Total time divided by the duration of the returned audio. `< 1` means faster than real time (lower is better). The summary reports this per server as `RTF_act` (with the actual audio duration in `audio_dur`), plus `RTF_norm` and `RTF_adj`: `RTF_norm` divides each server's total time by the mean audio duration across servers, so servers speaking the same text at different rates are compared fairly; `RTF_adj` = that server's audio duration / the mean — the factor that corrects `RTF_act` for speech rate, i.e. `RTF_act` × `RTF_adj` = `RTF_norm`. |
 | Audio | Returned audio duration and byte count. |
 
 ### STT Benchmarks

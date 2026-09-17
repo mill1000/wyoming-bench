@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import unittest
 
-from wyoming_bench.tts.reporting import Measurement, normalized_rtfs, summarize_mode
+from wyoming_bench.tts.reporting import Measurement, normalized_stats, summarize_mode
 
 
 def _meas(server: str, total_s: float, audio_duration_s: float, text: str = "hello world") -> Measurement:
@@ -30,7 +30,7 @@ class TestTrueRtf(unittest.TestCase):
         self.assertIsNone(_meas("s", 1.0, 0.0).rtf)
 
 
-class TestNormalizedRtfs(unittest.TestCase):
+class TestNormalizedStats(unittest.TestCase):
     def _rows(self):
         a = [_meas("a", 2.0, 19.09)]
         b = [_meas("b", 5.0, 9.27)]
@@ -39,15 +39,25 @@ class TestNormalizedRtfs(unittest.TestCase):
             ("b", summarize_mode(b, "non_streaming")),
         ]
 
-    def test_ratio_equals_wall_time_ratio(self):
-        norm = normalized_rtfs(self._rows())
-        self.assertAlmostEqual(norm["b"] / norm["a"], 5.0 / 2.0)
+    def test_rtf_norm_ratio_equals_wall_time_ratio(self):
+        norm = normalized_stats(self._rows())
+        self.assertAlmostEqual(norm["b"]["rtf_norm"] / norm["a"]["rtf_norm"], 5.0 / 2.0)
 
-    def test_uses_mean_audio(self):
-        norm = normalized_rtfs(self._rows())
+    def test_rtf_norm_uses_mean_audio(self):
+        norm = normalized_stats(self._rows())
         mean_audio = (19.09 + 9.27) / 2
-        self.assertAlmostEqual(norm["a"], 2.0 / mean_audio)
-        self.assertAlmostEqual(norm["b"], 5.0 / mean_audio)
+        self.assertAlmostEqual(norm["a"]["rtf_norm"], 2.0 / mean_audio)
+        self.assertAlmostEqual(norm["b"]["rtf_norm"], 5.0 / mean_audio)
+
+    def test_audio_dur_norm_scales_to_mean(self):
+        # Each server's audio duration is scaled to the cross-server mean, so
+        # the average server is 1.0 and the slow/fast speakers deviate.
+        norm = normalized_stats(self._rows())
+        mean_audio = (19.09 + 9.27) / 2
+        self.assertAlmostEqual(norm["a"]["audio_dur_norm"], 19.09 / mean_audio)
+        self.assertAlmostEqual(norm["b"]["audio_dur_norm"], 9.27 / mean_audio)
+        # The mean of the two (equal weight) is exactly 1.0.
+        self.assertAlmostEqual((norm["a"]["audio_dur_norm"] + norm["b"]["audio_dur_norm"]) / 2, 1.0)
 
     def test_true_rtf_still_biased(self):
         # The per-server RTF divides by each server's own audio duration, so a
@@ -57,7 +67,7 @@ class TestNormalizedRtfs(unittest.TestCase):
         self.assertNotAlmostEqual(b.rtf / a.rtf, 5.0 / 2.0)
 
     def test_empty(self):
-        self.assertEqual(normalized_rtfs([]), {})
+        self.assertEqual(normalized_stats([]), {})
 
 
 if __name__ == "__main__":
