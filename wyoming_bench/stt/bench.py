@@ -13,7 +13,7 @@ from wyoming.asr import (
 )
 from wyoming.client import AsyncTcpClient
 from wyoming.error import Error
-from wyoming.info import Info
+from wyoming.info import Info, SelectProgram
 
 from ..const import MODE_STREAMING
 from ..info import advertised_streaming
@@ -36,6 +36,7 @@ async def _probe_stt_streaming(
     connect_timeout: float,
     read_timeout: float,
     probe_timeout: float = STREAM_PROBE_TIMEOUT,
+    program: str | None = None,
 ) -> bool:
     """Return True if *host:port* streams transcript chunks.
 
@@ -43,7 +44,8 @@ async def _probe_stt_streaming(
     the first transcript-related event. A streaming server answers with
     ``transcript-start``/``transcript-chunk`` (-> True); a non-streaming server
     answers with a single ``transcript`` (-> False). Uses a short per-event
-    timeout so the probe is fast either way.
+    timeout so the probe is fast either way. When *program* is given, the
+    probe runs against that ASR program.
     """
     client = AsyncTcpClient(
         host,
@@ -53,6 +55,8 @@ async def _probe_stt_streaming(
     )
     try:
         await client.connect()
+        if program is not None:
+            await client.write_event(SelectProgram(program).event())
         await client.write_event(transcribe.event())
         await _send_audio(client, audio, chunk_samples)
         while True:
@@ -97,22 +101,26 @@ async def bench_stt_server(
     probe_timeout: float = STREAM_PROBE_TIMEOUT,
     info: Info | None = None,
     trailing_silence: float = 0.0,
+    program: str | None = None,
 ) -> list[SttMeasurement]:
-    """Benchmark one STT server.
+    """Benchmark one STT server (or one ASR program of a server).
 
     Runs warmup (untimed) then ``rounds`` x ``samples`` per mode, sequentially.
-    Streaming mode is skipped immediately when the server's advertised info
-    says it is unsupported; otherwise it is probed first (on the shortest
-    sample) and skipped if the server does not stream transcript chunks. A
-    measurement that fails to connect means the server is down/unreachable;
-    the remaining runs (including other modes) are skipped instead of each
-    paying the connect timeout again.
+    When *program* is given, a ``select-program`` event selects that ASR
+    program for each measurement's connection (and the streaming probe), and
+    the streaming-skip decision uses that program's advertised flag. Streaming
+    mode is skipped immediately when the server's advertised info says it is
+    unsupported; otherwise it is probed first (on the shortest sample) and
+    skipped if the server does not stream transcript chunks. A measurement
+    that fails to connect means the server is down/unreachable; the remaining
+    runs (including other modes) are skipped instead of each paying the
+    connect timeout again.
     """
     measurements: list[SttMeasurement] = []
     probe_sample = min(samples, key=lambda s: s.duration_s) if samples else None
     for mode in modes:
         if mode == MODE_STREAMING:
-            if advertised_streaming(info, "asr") is False:
+            if advertised_streaming(info, "asr", program) is False:
                 print(
                     f"  [streaming] NOT SUPPORTED by {host}:{port} "
                     f"(not advertised by server); skipping streaming mode",
@@ -128,6 +136,7 @@ async def bench_stt_server(
                 connect_timeout,
                 read_timeout,
                 probe_timeout,
+                program,
             )
             if not supported:
                 print(
@@ -148,6 +157,7 @@ async def bench_stt_server(
                 read_timeout,
                 chunk_delay,
                 trailing_silence,
+                program,
             )
             if w.connection_failed:
                 _report_unreachable_stt(host, port, w.error)
@@ -168,6 +178,7 @@ async def bench_stt_server(
                     read_timeout,
                     chunk_delay,
                     trailing_silence,
+                    program,
                 )
                 if m.connection_failed:
                     _report_unreachable_stt(host, port, m.error)

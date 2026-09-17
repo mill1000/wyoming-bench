@@ -61,7 +61,7 @@ Metrics, per mode, aggregated across rounds as min / mean / median / p95 / max:
 
 ### STT Benchmarks
 
-Benchmark speech-to-text (ASR) servers in both non-streaming and streaming mode, reporting speed and accuracy metrics.
+Benchmark speech-to-text servers in both non-streaming and streaming mode, reporting speed and accuracy metrics.
 
 A benchmark requires a corpus. See [corpus format](#stt-corpus-format) for more information.
 
@@ -89,6 +89,16 @@ Accuracy, per mode, across all samples (word-, character-, and sentence-level):
 | SAR | Sentence accuracy: the fraction of samples whose normalized transcript exactly matches the reference. |
 | S / I / D | Total substitution / insertion / deletion word counts. |
 
+### Program Selection
+
+A single Wyoming server can support multiple programs (e.g. multiple TTS or STT backends). Use `wyoming-bench info` to list the supported programs.
+
+The `--programs` argument specifies which programs to test in a benchmark. If unspecified, the each server's default program is used.
+- `--programs all` benchmarks every program the server supports.
+- `--programs NAME[,NAME…]` benchmarks the named programs on each server.
+  - If a server doesn't support the named program, a warning is emitted and the server is skipped.
+  - Add `any` to the program list to allow fallback to the server's default if the named program is not supported.
+
 ## Examples
 
 ```sh
@@ -112,6 +122,19 @@ wyoming-bench stt a:10300 --mode streaming --corpus ./samples --chunk-delay 0.1
 
 # Inspect what a server offers before benchmarking it
 wyoming-bench info 127.0.0.1:10200
+
+# TTS: a server hosting multiple TTS programs — pick some, or benchmark them all
+wyoming-bench tts a:10200 --programs piper,kokoro
+wyoming-bench tts a:10200 --programs all
+
+# TTS: servers hosting different programs — each benchmarks the ones it advertises
+wyoming-bench tts a:10200 b:10201 --programs piper,kokoro
+
+# TTS: piper where available, each server's default program otherwise
+wyoming-bench tts a:10200 b:10201 --programs piper,any
+
+# STT: a server hosting multiple STT (ASR) programs — benchmark them all
+wyoming-bench stt a:10300 --corpus ./samples --programs all
 ```
 
 ## STT Corpus Format

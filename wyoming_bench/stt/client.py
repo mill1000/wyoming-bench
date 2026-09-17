@@ -1,4 +1,4 @@
-"""Wyoming STT (ASR) client wrapper that performs a single timed measurement.
+"""Wyoming STT client wrapper that performs a single timed measurement.
 
 Uses the official async ``wyoming`` library (``AsyncTcpClient``). Each
 measurement opens a fresh TCP connection so results are isolated per round.
@@ -34,6 +34,7 @@ from wyoming.asr import (
 from wyoming.audio import AudioChunk, AudioStart, AudioStop
 from wyoming.client import AsyncTcpClient
 from wyoming.error import Error
+from wyoming.info import SelectProgram
 
 from ..const import MODE_NON_STREAMING, MODE_STREAMING
 from .accuracy import char_accuracy, word_accuracy
@@ -69,6 +70,7 @@ async def measure_stt_once(
     read_timeout: float,
     chunk_delay: float = 0.0,
     trailing_silence: float = 0.0,
+    program: str | None = None,
 ) -> SttMeasurement:
     """Run one transcription against *host*:*port* and return a SttMeasurement.
 
@@ -76,6 +78,9 @@ async def measure_stt_once(
     ``error``) rather than raised, so a single bad run cannot abort a batch.
     A failed TCP connect additionally sets ``connection_failed``, so callers
     can stop re-attempting a down server instead of paying the timeout again.
+    When *program* is given, a ``select-program`` event is sent right after
+    connecting so the measurement runs against that ASR program (a no-op on
+    servers that predate the event, which then use their default program).
     """
     m = SttMeasurement(
         server=f"{host}:{port}",
@@ -96,6 +101,8 @@ async def measure_stt_once(
             m.error = f"unavailable: {type(e).__name__}: {e}"
             m.connection_failed = True
             return m
+        if program is not None:
+            await client.write_event(SelectProgram(program).event())
         if mode == MODE_STREAMING:
             await _run_streaming(client, m, audio, transcribe, chunk_samples, chunk_delay, trailing_silence)
         else:
@@ -125,16 +132,21 @@ async def transcribe_audio(
     chunk_samples: int,
     connect_timeout: float,
     read_timeout: float,
+    program: str | None = None,
 ) -> str:
     """Transcribe *audio* once and return the final transcript text.
 
     Non-streaming path only (seeding does not need partial results). Opens a
-    fresh connection. Raises ``TranscriptionError`` (or ``TimeoutError``) on
-    failure rather than returning a partial result.
+    fresh connection. When *program* is given, a ``select-program`` event is
+    sent right after connecting (a no-op on servers that predate the event).
+    Raises ``TranscriptionError`` (or ``TimeoutError``) on failure rather
+    than returning a partial result.
     """
     client = AsyncTcpClient(host, port, connect_timeout=connect_timeout, read_timeout=read_timeout)
     try:
         await client.connect()
+        if program is not None:
+            await client.write_event(SelectProgram(program).event())
         m = SttMeasurement(
             server=f"{host}:{port}",
             mode=MODE_NON_STREAMING,
@@ -167,7 +179,7 @@ async def _send_audio(
     streaming); ``0`` sends as fast as the socket allows.
 
     *trailing_silence* (seconds) appends that much zero PCM to the end of the
-    recording **on the wire only**, so streaming (online) ASR models see enough
+    recording **on the wire only**, so streaming (online) STT models see enough
     trailing context to finalize their last words. It does not change
     ``audio.duration_s``, which is what RTF is computed from.
     """

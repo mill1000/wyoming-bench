@@ -62,6 +62,67 @@ async def _mock_stt_handler(reader, writer, reply):
         await writer.wait_closed()
 
 
+async def _mock_stt_handler_recording(reader, writer, events: list[str]):
+    """Transcribe with fixed text, recording the event types received."""
+    try:
+        while True:
+            event = await async_read_event(reader)
+            if event is None:
+                break
+            events.append(event.type)
+            if event.type == "transcribe":
+                await async_read_event(reader)  # audio-start
+                while True:  # audio-chunk* then audio-stop
+                    ev = await async_read_event(reader)
+                    if ev is None or AudioStop.is_type(ev.type):
+                        break
+                await async_write_event(Transcript(text=REFERENCE).event(), writer)
+                break
+    except (ConnectionResetError, asyncio.IncompleteReadError):
+        pass
+    finally:
+        try:
+            writer.close()
+        except Exception:  # noqa: BLE001
+            pass
+        await writer.wait_closed()
+
+
+async def _mock_stt_handler_requiring_program(reader, writer, events: list[str], expected: str):
+    """Transcribe only if select-program picked *expected*; error otherwise."""
+    selected: str | None = None
+    try:
+        while True:
+            event = await async_read_event(reader)
+            if event is None:
+                break
+            events.append(event.type)
+            if event.type == "select-program":
+                selected = event.data["name"]
+            elif event.type == "transcribe":
+                await async_read_event(reader)  # audio-start
+                while True:  # audio-chunk* then audio-stop
+                    ev = await async_read_event(reader)
+                    if ev is None or AudioStop.is_type(ev.type):
+                        break
+                if selected == expected:
+                    await async_write_event(Transcript(text=REFERENCE).event(), writer)
+                else:
+                    await async_write_event(
+                        Error(code="asr_unknown_program", text=f"program {selected!r} not found").event(),
+                        writer,
+                    )
+                break
+    except (ConnectionResetError, asyncio.IncompleteReadError):
+        pass
+    finally:
+        try:
+            writer.close()
+        except Exception:  # noqa: BLE001
+            pass
+        await writer.wait_closed()
+
+
 class TestMeasureSttOnce(unittest.IsolatedAsyncioTestCase):
     async def test_unreachable_sets_connection_failed(self):
         # Nothing listens on 127.0.0.1:1: the measurement must fail fast and
@@ -158,6 +219,62 @@ class TestMeasureSttOnce(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(captured["bytes"], len(audio.pcm) + expected_silence)
 
 
+class TestMeasureSttOnceProgram(unittest.IsolatedAsyncioTestCase):
+    """select-program is sent before transcribe, and the server sees it."""
+
+    async def _with_server(self, handler, *handler_args):
+        server = await asyncio.start_server(lambda r, w: handler(r, w, *handler_args), "127.0.0.1", 0)
+        port = server.sockets[0].getsockname()[1]
+        try:
+            yield port
+        finally:
+            server.close()
+            await server.wait_closed()
+
+    async def _run(self, port, program=None):
+        return await measure_stt_once(
+            "127.0.0.1",
+            port,
+            MODE_NON_STREAMING,
+            _make_audio(),
+            Transcribe(),
+            512,
+            5.0,
+            5.0,
+            0.0,
+            0.0,
+            program,
+        )
+
+    async def test_program_sent_before_transcribe(self):
+        events: list[str] = []
+        async for port in self._with_server(_mock_stt_handler_recording, events):
+            m = await self._run(port, "asr-prog")
+        self.assertTrue(m.ok, m.error)
+        self.assertEqual(events, ["select-program", "transcribe"])
+
+    async def test_no_program_sends_no_select_event(self):
+        events: list[str] = []
+        async for port in self._with_server(_mock_stt_handler_recording, events):
+            m = await self._run(port)
+        self.assertTrue(m.ok, m.error)
+        self.assertEqual(events, ["transcribe"])
+
+    async def test_server_selects_the_requested_program(self):
+        events: list[str] = []
+        async for port in self._with_server(_mock_stt_handler_requiring_program, events, "asr-prog"):
+            m = await self._run(port, "asr-prog")
+        self.assertTrue(m.ok, m.error)
+        self.assertEqual(events[0], "select-program")
+
+    async def test_wrong_program_is_rejected_by_server(self):
+        events: list[str] = []
+        async for port in self._with_server(_mock_stt_handler_requiring_program, events, "asr-prog"):
+            m = await self._run(port, "other")
+        self.assertFalse(m.ok)
+        self.assertIn("asr_unknown_program", m.error)
+
+
 class TestTranscribeAudio(unittest.IsolatedAsyncioTestCase):
     """transcribe_audio (used by seed) returns the final text or raises."""
 
@@ -188,6 +305,38 @@ class TestTranscribeAudio(unittest.IsolatedAsyncioTestCase):
         # so the seed runner can report a per-sample failure.
         with self.assertRaises(OSError):
             await transcribe_audio("127.0.0.1", 1, _make_audio(), Transcribe(), 512, 1.0, 1.0)
+
+    async def test_program_sent_before_transcribe(self):
+        events: list[str] = []
+        server = await asyncio.start_server(
+            lambda r, w: _mock_stt_handler_recording(r, w, events), "127.0.0.1", 0
+        )
+        port = server.sockets[0].getsockname()[1]
+        try:
+            text = await transcribe_audio(
+                "127.0.0.1", port, _make_audio(), Transcribe(), 512, 5.0, 5.0, "asr-prog"
+            )
+        finally:
+            server.close()
+            await server.wait_closed()
+        self.assertEqual(text, REFERENCE)
+        self.assertEqual(events, ["select-program", "transcribe"])
+
+    async def test_program_reached_by_program_aware_server(self):
+        events: list[str] = []
+        server = await asyncio.start_server(
+            lambda r, w: _mock_stt_handler_requiring_program(r, w, events, "asr-prog"), "127.0.0.1", 0
+        )
+        port = server.sockets[0].getsockname()[1]
+        try:
+            text = await transcribe_audio(
+                "127.0.0.1", port, _make_audio(), Transcribe(), 512, 5.0, 5.0, "asr-prog"
+            )
+        finally:
+            server.close()
+            await server.wait_closed()
+        self.assertEqual(text, REFERENCE)
+        self.assertEqual(events[0], "select-program")
 
 
 if __name__ == "__main__":

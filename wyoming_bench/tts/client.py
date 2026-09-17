@@ -12,6 +12,7 @@ import time
 from wyoming.audio import AudioChunk, AudioStart, AudioStop
 from wyoming.client import AsyncTcpClient
 from wyoming.error import Error
+from wyoming.info import SelectProgram
 from wyoming.tts import (
     Synthesize,
     SynthesizeChunk,
@@ -55,6 +56,7 @@ async def measure_once(
     connect_timeout: float,
     read_timeout: float,
     chunk_delay: float = 0.0,
+    program: str | None = None,
 ) -> Measurement:
     """Run one synthesis against *host*:*port* and return a Measurement.
 
@@ -62,6 +64,9 @@ async def measure_once(
     ``error``) rather than raised, so a single bad run cannot abort a batch.
     A failed TCP connect additionally sets ``connection_failed``, so callers
     can stop re-attempting a down server instead of paying the timeout again.
+    When *program* is given, a ``select-program`` event is sent right after
+    connecting so the measurement runs against that TTS program (a no-op on
+    servers that predate the event, which then use their default program).
     """
     m = Measurement(server=f"{host}:{port}", mode=mode, text=text)
     m.sentence_count = len(split_sentences(text))
@@ -83,6 +88,8 @@ async def measure_once(
             m.error = f"unavailable: {type(e).__name__}: {e}"
             m.connection_failed = True
             return m
+        if program is not None:
+            await client.write_event(SelectProgram(program).event())
         if mode == MODE_STREAMING:
             await _run_streaming(client, m, text, voice, text_fmt, chunk_delay)
         else:
@@ -260,16 +267,21 @@ async def synthesize_audio(
     text_format: str | None,
     connect_timeout: float,
     read_timeout: float,
+    program: str | None = None,
 ) -> tuple[bytes, int, int, int]:
     """Synthesize *text* and return ``(pcm, rate, width, channels)``.
 
-    Opens a fresh connection. Raises ``SynthesisError`` (or ``TimeoutError``)
-    on failure rather than returning a partial result.
+    Opens a fresh connection. When *program* is given, a ``select-program``
+    event is sent right after connecting (a no-op on servers that predate
+    the event). Raises ``SynthesisError`` (or ``TimeoutError``) on failure
+    rather than returning a partial result.
     """
     text_fmt = _to_format(text_format)
     client = AsyncTcpClient(host, port, connect_timeout=connect_timeout, read_timeout=read_timeout)
     try:
         await client.connect()
+        if program is not None:
+            await client.write_event(SelectProgram(program).event())
         if mode == MODE_STREAMING:
             reader = asyncio.create_task(_collect_audio(client, SynthesizeStopped))
             try:
