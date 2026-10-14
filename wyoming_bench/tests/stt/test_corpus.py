@@ -76,9 +76,7 @@ class TestLoadCorpus(unittest.TestCase):
 
         with contextlib.redirect_stdout(io.StringIO()):
             samples = load_corpus(self.dir)
-        self.assertEqual(
-            [s.sample_id for s in samples], ["sub/deep/deep", "sub/mid", "top"]
-        )
+        self.assertEqual([s.sample_id for s in samples], ["sub/deep/deep", "sub/mid", "top"])
 
     def test_missing_directory(self):
         with self.assertRaises(FileNotFoundError):
@@ -146,9 +144,7 @@ class TestLoadRecordings(unittest.TestCase):
 
         with contextlib.redirect_stdout(io.StringIO()):
             samples = load_recordings(self.dir)
-        self.assertEqual(
-            [s.sample_id for s in samples], ["sub/deep/deep", "sub/mid", "top"]
-        )
+        self.assertEqual([s.sample_id for s in samples], ["sub/deep/deep", "sub/mid", "top"])
 
     def test_same_stem_in_subdirs_stays_unique(self):
         # The generate-corpus layout nests per-mode/program dirs that all share
@@ -160,9 +156,7 @@ class TestLoadRecordings(unittest.TestCase):
 
         with contextlib.redirect_stdout(io.StringIO()):
             samples = load_recordings(self.dir)
-        self.assertEqual(
-            [s.sample_id for s in samples], ["non_streaming/01_x", "streaming/01_x"]
-        )
+        self.assertEqual([s.sample_id for s in samples], ["non_streaming/01_x", "streaming/01_x"])
 
     def test_missing_directory(self):
         with self.assertRaises(FileNotFoundError):

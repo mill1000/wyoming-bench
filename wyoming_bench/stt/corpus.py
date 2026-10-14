@@ -46,11 +46,7 @@ def _read_wav(path: Path) -> tuple[int, int, int, bytes]:
 def _list_wavs(directory: Path) -> list[Path]:
     """All regular ``.wav`` files under *directory* (recursively), sorted by path."""
     return sorted(
-        (
-            p
-            for p in directory.rglob("*")
-            if p.is_file() and p.suffix.lower() == ".wav"
-        ),
+        (p for p in directory.rglob("*") if p.is_file() and p.suffix.lower() == ".wav"),
         key=lambda p: str(p.relative_to(directory)).lower(),
     )
 
