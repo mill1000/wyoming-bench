@@ -2,7 +2,9 @@
 
 A corpus directory contains ``<stem>.wav`` recordings and matching
 ``<stem>.txt`` transcripts (e.g. ``data_01.wav`` + ``data_01.txt``). Files
-without a matching counterpart are skipped with a warning.
+without a matching counterpart are skipped with a warning. Recordings may be
+nested in subdirectories: they are discovered recursively and paired with
+transcripts by relative path.
 """
 
 from __future__ import annotations
@@ -42,15 +44,30 @@ def _read_wav(path: Path) -> tuple[int, int, int, bytes]:
 
 
 def _list_wavs(directory: Path) -> list[Path]:
-    """All regular ``.wav`` files directly under *directory*, sorted by name."""
+    """All regular ``.wav`` files under *directory* (recursively), sorted by path."""
     return sorted(
-        (p for p in directory.iterdir() if p.is_file() and p.suffix.lower() == ".wav"),
-        key=lambda p: p.name.lower(),
+        (
+            p
+            for p in directory.rglob("*")
+            if p.is_file() and p.suffix.lower() == ".wav"
+        ),
+        key=lambda p: str(p.relative_to(directory)).lower(),
     )
 
 
+def _relative_id(path: Path, root: Path) -> str:
+    """*path* relative to *root*, without its suffix, with forward slashes.
+
+    Used as a sample id so nested recordings stay unique and readable, while
+    top-level recordings keep the plain file stem they always had.
+    """
+    return path.relative_to(root).with_suffix("").as_posix()
+
+
 def load_corpus(directory: Path | str) -> list[AudioInput]:
-    """Load all ``.wav``/``.txt`` pairs under *directory*, sorted by sample id.
+    """Load all ``.wav``/``.txt`` pairs under *directory* (recursively).
+
+    Pairs are matched by relative path and sorted by sample id.
 
     Raises ``FileNotFoundError`` if the directory is missing or contains no
     valid pairs.
@@ -74,7 +91,7 @@ def load_corpus(directory: Path | str) -> list[AudioInput]:
             continue
         samples.append(
             AudioInput(
-                sample_id=wav_path.stem,
+                sample_id=_relative_id(wav_path, directory),
                 reference=reference,
                 rate=rate,
                 width=width,
@@ -85,12 +102,12 @@ def load_corpus(directory: Path | str) -> list[AudioInput]:
         )
 
     # Warn about transcripts that have no recording.
-    wav_stem_names = {w.stem for w in wavs}
+    wav_ids = {_relative_id(w, directory) for w in wavs}
     for txt_path in sorted(
-        (p for p in directory.iterdir() if p.is_file() and p.suffix.lower() == ".txt"),
-        key=lambda p: p.name.lower(),
+        (p for p in directory.rglob("*") if p.is_file() and p.suffix.lower() == ".txt"),
+        key=lambda p: str(p.relative_to(directory)).lower(),
     ):
-        if txt_path.stem not in wav_stem_names:
+        if _relative_id(txt_path, directory) not in wav_ids:
             print(f"  [corpus] no recording for {txt_path.name}; skipping", flush=True)
 
     samples.sort(key=lambda s: s.sample_id)
@@ -100,7 +117,7 @@ def load_corpus(directory: Path | str) -> list[AudioInput]:
 
 
 def load_recordings(directory: Path | str) -> list[AudioInput]:
-    """Load all ``.wav`` recordings under *directory*, paired or not.
+    """Load all ``.wav`` recordings under *directory* (recursively), paired or not.
 
     Unlike :func:`load_corpus`, recordings **without** a ``.txt`` transcript
     are included (with an empty reference): this is the input for the
@@ -123,7 +140,7 @@ def load_recordings(directory: Path | str) -> list[AudioInput]:
             continue
         samples.append(
             AudioInput(
-                sample_id=wav_path.stem,
+                sample_id=_relative_id(wav_path, directory),
                 reference="",
                 rate=rate,
                 width=width,

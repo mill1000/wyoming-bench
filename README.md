@@ -153,6 +153,7 @@ samples/
 ```
 
 - Files without a matching counterpart are skipped with a warning.
+- Recordings and transcripts may be nested in subdirectories; they are discovered recursively and paired by relative path.
 - The audio file is sent to the server as-is, so recordings should be in a format your STT server supports.
 
 ### Generating a synthetic corpus from a TTS server
@@ -173,3 +174,4 @@ wyoming-bench seed-corpus stt:10300 --corpus ./recordings
 
 - Transcriptions should be checked for accuracy before utilizing in a benchmark.
 - Recordings that already have a transcript (`.txt` file) are skipped by default, so reviewed transcripts aren't overwritten.
+- Recordings may be nested in subdirectories; they are discovered recursively.

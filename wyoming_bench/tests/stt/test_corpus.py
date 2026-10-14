@@ -64,6 +64,22 @@ class TestLoadCorpus(unittest.TestCase):
             samples = load_corpus(self.dir)
         self.assertEqual([s.sample_id for s in samples], ["a_1", "b_2"])
 
+    def test_loads_nested_pairs_recursively(self):
+        (self.dir / "sub").mkdir()
+        (self.dir / "sub" / "deep").mkdir(parents=True)
+        _write_wav(self.dir / "top.wav")
+        (self.dir / "top.txt").write_text("top", encoding="utf-8")
+        _write_wav(self.dir / "sub" / "mid.wav")
+        (self.dir / "sub" / "mid.txt").write_text("mid", encoding="utf-8")
+        _write_wav(self.dir / "sub" / "deep" / "deep.wav")
+        (self.dir / "sub" / "deep" / "deep.txt").write_text("deep", encoding="utf-8")
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            samples = load_corpus(self.dir)
+        self.assertEqual(
+            [s.sample_id for s in samples], ["sub/deep/deep", "sub/mid", "top"]
+        )
+
     def test_missing_directory(self):
         with self.assertRaises(FileNotFoundError):
             load_corpus(self.dir / "nope")
@@ -120,6 +136,33 @@ class TestLoadRecordings(unittest.TestCase):
         with contextlib.redirect_stdout(io.StringIO()):
             samples = load_recordings(self.dir)
         self.assertEqual([s.sample_id for s in samples], ["a_1", "b_2"])
+
+    def test_loads_nested_wavs_recursively(self):
+        (self.dir / "sub").mkdir()
+        (self.dir / "sub" / "deep").mkdir(parents=True)
+        _write_wav(self.dir / "top.wav")
+        _write_wav(self.dir / "sub" / "mid.wav")
+        _write_wav(self.dir / "sub" / "deep" / "deep.wav")
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            samples = load_recordings(self.dir)
+        self.assertEqual(
+            [s.sample_id for s in samples], ["sub/deep/deep", "sub/mid", "top"]
+        )
+
+    def test_same_stem_in_subdirs_stays_unique(self):
+        # The generate-corpus layout nests per-mode/program dirs that all share
+        # the same file names; the sample id must disambiguate them by path.
+        (self.dir / "non_streaming").mkdir()
+        (self.dir / "streaming").mkdir()
+        _write_wav(self.dir / "non_streaming" / "01_x.wav")
+        _write_wav(self.dir / "streaming" / "01_x.wav")
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            samples = load_recordings(self.dir)
+        self.assertEqual(
+            [s.sample_id for s in samples], ["non_streaming/01_x", "streaming/01_x"]
+        )
 
     def test_missing_directory(self):
         with self.assertRaises(FileNotFoundError):
